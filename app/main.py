@@ -7,16 +7,23 @@ import binascii
 import logging
 from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
 from starlette.responses import Response
 from starlette.types import Scope
 
 from app.agent import build_harness, system_prompt
+from app.artifacts import (
+    ArtifactTracker,
+    artifact_kind,
+    inject_embed_script,
+    resolve_workspace_file,
+    scan_workspace,
+)
 from app.context_window import maybe_compact_history
 from app.image_processing import (
     ImageProcessingFailure,
@@ -24,7 +31,7 @@ from app.image_processing import (
     detect_supported_image_mime_type,
     process_image,
 )
-from app.rendering.sse import SseRenderer
+from app.rendering.sse import SseRenderer, encode_sse
 from app.runs import get_active, register_active, unregister_active
 from app.skills import SkillError, expand_skill_command, load_skills
 from app.sessions import (
@@ -35,7 +42,8 @@ from app.sessions import (
     new_session_id,
 )
 from app.settings import get_settings
-from app.tools import TOOLS
+from app.tools import TOOLS, WORKSPACE_DIR
+from brain.events import ToolExecutionEndEvent
 from brain.cancel import SimpleCancellationToken
 from brain.messages import AssistantMessage, ImageContent, TextContent, UserMessage
 from providers import active_provider_kind, get_provider
@@ -94,6 +102,8 @@ class ChatMessage(BaseModel):
 class AgentRequest(BaseModel):
     messages: list[ChatMessage] = Field(..., min_length=1, max_length=40)
     session_id: str | None = Field(default=None, max_length=64)
+    # Per-request OpenAI model; must be one of /api/models. Omit for the default.
+    model: str | None = Field(default=None, max_length=100)
 
 
 class QueueRequest(BaseModel):
@@ -105,6 +115,7 @@ class SessionMessageOut(BaseModel):
     # not something the user typed - rendered distinctly by the frontend.
     role: Literal["user", "assistant", "context_summary"]
     content: str
+    ts: int | None = None
 
 
 class SessionOut(BaseModel):
@@ -114,6 +125,7 @@ class SessionOut(BaseModel):
     updated_at: str
     title: str | None = None
     last_usage: dict[str, int] | None = None
+    artifacts: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class SessionSummaryOut(BaseModel):
@@ -121,6 +133,13 @@ class SessionSummaryOut(BaseModel):
     updated_at: str
     title: str | None
     message_count: int
+
+
+class ModelsOut(BaseModel):
+    provider: str
+    selectable: bool
+    default: str
+    models: list[str]
 
 
 class QueueOut(BaseModel):
@@ -163,6 +182,23 @@ def healthz() -> dict[str, object]:
     }
 
 
+@app.get("/api/models", response_model=ModelsOut)
+def list_models() -> ModelsOut:
+    """Models the UI may offer. Only OpenAI supports switching; the mock and
+    the Azure adapter report their single fixed model."""
+    settings = get_settings()
+    provider = active_provider_kind(settings)
+    if provider == "openai":
+        models = list(settings.selectable_models)
+        return ModelsOut(provider=provider, selectable=True, default=models[0], models=models)
+    fixed = {
+        "mock": "mock",
+        "azure_openai": settings.azure_openai_deployment,
+        "unconfigured": "unset",
+    }[provider]
+    return ModelsOut(provider=provider, selectable=False, default=fixed, models=[fixed])
+
+
 @app.get("/api/sessions", response_model=list[SessionSummaryOut])
 async def list_sessions() -> list[SessionSummaryOut]:
     rows = await get_session_store().list_recent(limit=20)
@@ -198,7 +234,7 @@ async def get_session(session_id: str) -> SessionOut:
     return SessionOut(
         id=session.id,
         messages=[
-            SessionMessageOut(role=m.role, content=m.content)  # type: ignore[arg-type]
+            SessionMessageOut(role=m.role, content=m.content, ts=m.ts)  # type: ignore[arg-type]
             for m in session.ui_chat_messages()
             if m.role in {"user", "assistant", "context_summary"}
         ],
@@ -206,6 +242,7 @@ async def get_session(session_id: str) -> SessionOut:
         updated_at=session.updated_at,
         title=session.title,
         last_usage=last_usage,
+        artifacts=session.artifacts,
     )
 
 
@@ -302,13 +339,19 @@ async def agent(body: AgentRequest, request: Request) -> StreamingResponse:
     if history and isinstance(history[-1], UserMessage) and history[-1].content == latest_user:
         history = history[:-1]
 
-    provider = get_provider()
+    settings = get_settings()
+    model = None
+    if body.model and active_provider_kind(settings) == "openai":
+        if body.model not in settings.selectable_models:
+            raise HTTPException(status_code=422, detail=f"Unknown model: {body.model}")
+        model = body.model
+    provider = get_provider(model)
     history = await maybe_compact_history(
         history,
         provider=provider,
         system=system_prompt(),
         tools=TOOLS,
-        context_window_tokens=get_settings().context_window_tokens,
+        context_window_tokens=settings.context_window_tokens,
     )
 
     try:
@@ -331,6 +374,8 @@ async def agent(body: AgentRequest, request: Request) -> StreamingResponse:
     cancel = SimpleCancellationToken()
     register_active(session_id, harness)
 
+    tracker = ArtifactTracker(WORKSPACE_DIR)
+
     async def event_stream() -> AsyncIterator[str]:
         renderer = SseRenderer(session_id=session_id)
         stream = harness.prompt_message(prompt_message)
@@ -343,6 +388,13 @@ async def agent(body: AgentRequest, request: Request) -> StreamingResponse:
                 wire = renderer.to_sse(event)
                 if wire is not None:
                     yield wire
+                if isinstance(event, ToolExecutionEndEvent):
+                    for artifact in tracker.changes():
+                        artifact["version"] = 1 + sum(
+                            1 for a in session.artifacts if a.get("path") == artifact["path"]
+                        )
+                        session.artifacts.append(artifact)
+                        yield encode_sse({"type": "artifact", **artifact})
         finally:
             try:
                 await stream.aclose()
@@ -370,6 +422,40 @@ async def agent(body: AgentRequest, request: Request) -> StreamingResponse:
             "X-Session-Id": session_id,
         },
     )
+
+
+@app.get("/api/files")
+def list_files() -> list[dict[str, Any]]:
+    """Workspace files, newest first (capped), for the UI's Files list."""
+    stamps = scan_workspace(WORKSPACE_DIR)
+    rows = [
+        {"path": path, "kind": artifact_kind(path), "size": s.size, "mtime": s.mtime_ns // 1_000_000}
+        for path, s in stamps.items()
+    ]
+    rows.sort(key=lambda r: r["mtime"], reverse=True)
+    return rows[:200]
+
+
+@app.get("/api/files/{rel_path:path}")
+def get_file(rel_path: str, embed: bool = False, download: bool = False) -> Response:
+    """Serve a workspace file. Everything is sandboxed by CSP: HTML may run
+    scripts but gets an opaque origin, so it can never call this API (and so
+    never reach the agent's tools); nothing else may run scripts at all."""
+    path = resolve_workspace_file(WORKSPACE_DIR, rel_path)
+    if path is None:
+        raise HTTPException(status_code=404, detail="File not found.")
+    kind = artifact_kind(path.name)
+    headers = {"X-Content-Type-Options": "nosniff", "Cache-Control": "no-cache"}
+    if kind == "html":
+        headers["Content-Security-Policy"] = "sandbox allow-scripts allow-popups"
+    elif kind != "pdf":  # Chrome's PDF viewer refuses to run in a sandbox
+        headers["Content-Security-Policy"] = "sandbox"
+    if download:
+        return FileResponse(path, filename=path.name, headers=headers)
+    if kind == "html" and embed:
+        html = path.read_text(encoding="utf-8", errors="replace")
+        return HTMLResponse(inject_embed_script(html), headers=headers)
+    return FileResponse(path, headers=headers)
 
 
 app.mount("/", RevalidatingStaticFiles(directory=FRONTEND_DIR), name="frontend")

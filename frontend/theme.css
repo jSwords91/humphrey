@@ -1,45 +1,79 @@
-/* Humphrey theme tokens. Fonts are loaded from index.html so @import cannot
-   block first paint. */
+/* Humphrey theme tokens, from the brand sheet (logo, colour, type, motion).
+   Dark is the default ground. index.html sets data-theme on <html> before
+   first paint (the saved choice, else the OS preference) and the header
+   toggle flips it. Fonts are loaded from index.html so @import cannot block
+   first paint. */
 
 :root {
-  /* Palette */
-  --hb-ink: #16191d;
-  --hb-accent: #0f766e;
-  --hb-accent-deep: #115e59;
-  --hb-info: #1d5fbf;
-  --hb-success: #3d8b5a;
-  --hb-warning: #b45309;
-  --hb-reasoning: #6b4f8a;
+  color-scheme: dark;
 
-  /* Semantic surfaces (quiet light) */
-  --color-page: #f7f7f8;
-  --color-elevated: #ffffff;
-  --color-user-bubble: #ececec;
-  --color-tool-bg: #f3f3f5;
-  --color-fg: #1a1a1a;
-  --color-fg-inverse: #fafafa;
-  --color-muted: #737373;
-  --color-muted-soft: #8a8a8a;
-  --color-border: rgba(0, 0, 0, 0.08);
-  --color-border-strong: rgba(0, 0, 0, 0.14);
-  --color-accent: var(--hb-accent);
-  --color-accent-hover: var(--hb-accent-deep);
-  --color-accent-dim: color-mix(in srgb, var(--hb-accent) 10%, transparent);
-  --color-shadow: rgba(0, 0, 0, 0.06);
-  --color-shadow-strong: rgba(0, 0, 0, 0.1);
+  /* Chinchilla tan scale (500 is the accent) */
+  --hb-tan-100: #fbf6ee;
+  --hb-tan-200: #f3e8d6;
+  --hb-tan-300: #e6d4b6;
+  --hb-tan-400: #d8bd93;
+  --hb-tan-500: #c8a87a;
+  --hb-tan-600: #a88a5f;
+  --hb-tan-700: #856b46;
+  --hb-tan-800: #5e4c31;
+  --hb-tan-900: #332a1c;
+  --hb-stripe-ink: #14151c;
+
+  /* Palette roles */
+  --hb-ink: #14151c;
+  --hb-accent: var(--hb-tan-500);
+  --hb-accent-deep: var(--hb-tan-400); /* hover: lighter on dark ground */
+  --hb-success: #7fae8f; /* Done */
+  --hb-attention: #d08f76; /* Needs you */
+  --hb-queued: #75798c; /* Queued */
+  --hb-warning: var(--hb-attention);
+  --hb-info: #b2b6ca;
+  --hb-reasoning: #b2b6ca;
+  --hb-success-text: #a9cdb6;
+  --hb-attention-text: #e4b39f;
+  --hb-working-text: var(--hb-tan-300);
+
+  /* Surfaces */
+  --color-page: #161826; /* Ground */
+  --color-chrome: #1a1c29;
+  --color-inset: #1d1f2c;
+  --color-elevated: #232532; /* Raised */
+  --color-high: #2d303e;
+  --color-user-bubble: var(--color-high);
+  --color-tool-bg: var(--color-inset);
+  --color-code-island: #1d1f2c;
+
+  /* Text */
+  --color-fg: #e9e9ed;
+  --color-fg-2: #b2b6ca;
+  --color-muted: #9397ab;
+  --color-muted-soft: #75798c;
+  --color-mono: var(--hb-tan-400);
+
+  /* Lines and states */
+  --color-border: rgba(233, 233, 237, 0.1);
+  --color-border-strong: rgba(233, 233, 237, 0.16);
+  --color-hover: rgba(233, 233, 237, 0.06);
+  --color-accent-dim: rgba(200, 168, 122, 0.12);
+  --color-working-dim: rgba(200, 168, 122, 0.14);
+  --color-success-dim: rgba(127, 174, 143, 0.14);
+  --color-attention-dim: rgba(208, 143, 118, 0.16);
+  --color-hairline: rgba(233, 233, 237, 0.16);
+  --color-shadow: rgba(0, 0, 0, 0.25);
+  --color-shadow-strong: rgba(0, 0, 0, 0.4);
+  --color-scrim: rgba(10, 11, 18, 0.45);
   --color-focus: var(--hb-accent);
-  --color-code-island: #1e1e22;
 
   /* Aliases used by app.css */
   --color-bg: var(--color-page);
   --color-bg-soft: var(--color-tool-bg);
-  --color-bg-inverse: var(--hb-ink);
-  --color-fg-inverse: var(--color-fg-inverse);
+  --color-bg-inverse: var(--color-high);
+  --color-fg-inverse: var(--color-fg);
 
-  /* Type */
-  --font-sans: "Geist", system-ui, -apple-system, "Segoe UI", sans-serif;
-  --font-mono: "Geist Mono", ui-monospace, "SF Mono", "Cascadia Code", "Segoe UI Mono",
-    monospace;
+  /* Type: Inter 400/500 everywhere, never heavier; system mono for
+     paths, diffs, IDs and amounts. */
+  --font-sans: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Cascadia Code", monospace;
 
   --fs-xs: 0.75rem;
   --fs-sm: 0.875rem;
@@ -47,22 +81,22 @@
   --fs-md: 1.0625rem;
   --fs-lg: 1.25rem;
   --fs-xl: 1.5rem;
-  --fs-2xl: 2rem;
+  --fs-2xl: 2.5rem;
 
   --lh-tight: 1.15;
   --lh-snug: 1.35;
   --lh-base: 1.55;
   --lh-relaxed: 1.65;
 
-  --tracking-tight: -0.04em;
+  --tracking-tight: -0.03em;
   --tracking-normal: 0;
-  --tracking-wide: 0.06em;
+  --tracking-wide: 0.12em;
 
   --fw-regular: 400;
   --fw-medium: 500;
-  --fw-semibold: 600;
-  --fw-brand: 650;
-  --fw-bold: 700;
+  --fw-semibold: 500;
+  --fw-brand: 500;
+  --fw-bold: 500;
 
   /* Space: 4 / 8 / 12 / 16 / 24 / 32 / 48 */
   --space-1: 0.25rem;
@@ -73,15 +107,23 @@
   --space-6: 2rem;
   --space-7: 3rem;
 
-  /* Radii: 8 / 14 / 22 / pill */
-  --radius-sm: 8px;
-  --radius: 14px;
-  --radius-lg: 22px;
+  /* Radii carry the fold: a tight top-left corner on every container. */
+  --radius-sm: 3px 8px 8px 8px;
+  --radius: 3px 14px 14px 14px;
+  --radius-lg: 4px 20px 20px 20px;
   --radius-pill: 999px;
 
   --shadow-sm: 0 1px 2px var(--color-shadow);
   --shadow-md: 0 8px 28px var(--color-shadow-strong);
   --shadow-soft: 0 4px 16px var(--color-shadow);
+
+  /* Motion: the striped band */
+  --hb-band: repeating-linear-gradient(
+    90deg,
+    var(--hb-tan-500) 0 10px,
+    var(--hb-stripe-ink) 10px 14px
+  );
+  --hb-band-h: 4px;
 
   --ease: cubic-bezier(0.4, 0, 0.2, 1);
   --duration: 160ms;
@@ -98,6 +140,43 @@
   --user-bubble-max: 32rem;
 }
 
+:root[data-theme="light"] {
+  color-scheme: light;
+  --hb-accent: var(--hb-tan-700);
+  --hb-accent-deep: var(--hb-tan-800);
+  --hb-success: #4f8461;
+  --hb-attention: #b0654a;
+  --hb-info: #4a4c57;
+  --hb-reasoning: #4a4c57;
+  --hb-success-text: #3c6a4c;
+  --hb-attention-text: #94533b;
+  --hb-working-text: var(--hb-tan-800);
+
+  --color-page: #f6f4f0;
+  --color-chrome: #f2efe9;
+  --color-inset: #efebe4;
+  --color-elevated: #fbfaf7;
+  --color-high: #e4e0d8;
+
+  --color-fg: #23242c;
+  --color-fg-2: #4a4c57;
+  --color-muted: #6e7079;
+  --color-muted-soft: #8b8d96;
+  --color-mono: var(--hb-tan-700);
+
+  --color-border: rgba(20, 21, 28, 0.12);
+  --color-border-strong: rgba(20, 21, 28, 0.18);
+  --color-hover: rgba(20, 21, 28, 0.05);
+  --color-accent-dim: rgba(133, 107, 70, 0.12);
+  --color-working-dim: rgba(133, 107, 70, 0.14);
+  --color-success-dim: rgba(79, 132, 97, 0.14);
+  --color-attention-dim: rgba(176, 101, 74, 0.14);
+  --color-hairline: rgba(20, 21, 28, 0.14);
+  --color-shadow: rgba(20, 21, 28, 0.06);
+  --color-shadow-strong: rgba(20, 21, 28, 0.1);
+  --color-scrim: rgba(20, 21, 28, 0.08);
+}
+
 *,
 *::before,
 *::after {
@@ -109,7 +188,6 @@
 html {
   scroll-behavior: smooth;
   -webkit-text-size-adjust: 100%;
-  color-scheme: light;
   background-color: var(--color-page);
 }
 
@@ -123,4 +201,38 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
+}
+
+/* ── Logo mark ───────────────────────────────────────────────────────────
+   Tan square with the fold (top-left radius about a quarter of the others)
+   and a striped band across the lower 46%. Set --s for the size; at 20px
+   and below use .hb-mark-sm, where the stripes collapse to one black band. */
+
+.hb-mark {
+  --s: 22px;
+  position: relative;
+  flex: none;
+  display: inline-block;
+  width: var(--s);
+  height: var(--s);
+  overflow: hidden;
+  border-radius: calc(var(--s) * 0.09) calc(var(--s) * 0.37) calc(var(--s) * 0.37)
+    calc(var(--s) * 0.37);
+  background: var(--hb-tan-500);
+}
+
+.hb-mark::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 0;
+  height: 46%;
+  background: repeating-linear-gradient(
+    90deg,
+    var(--hb-tan-500) 0 calc(var(--s) * 0.2),
+    var(--hb-stripe-ink) calc(var(--s) * 0.2) calc(var(--s) * 0.27)
+  );
+}
+
+.hb-mark-sm::after {
+  background: var(--hb-stripe-ink);
 }

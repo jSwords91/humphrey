@@ -15,8 +15,10 @@
   const newBtn = document.getElementById("new-chat");
   const newBtnCollapsed = document.getElementById("new-chat-collapsed");
   const statusLabel = document.getElementById("status-label");
-  const modelChip = document.getElementById("model-chip");
-  const modelChipLabel = document.getElementById("model-chip-label");
+  const modelSelect = /** @type {HTMLSelectElement | null} */ (document.getElementById("model-select"));
+  const modelHint = document.getElementById("model-hint");
+  const themeToggle = document.getElementById("theme-toggle");
+  const detailsBtn = document.getElementById("details-btn");
   const sessionList = document.getElementById("session-list");
   const sessionsCount = document.getElementById("sessions-count");
   const activityDock = document.getElementById("activity-dock");
@@ -28,7 +30,6 @@
   const latestBtn = document.getElementById("latest-btn");
   const latestBtnDot = document.getElementById("latest-btn-dot");
   const scrim = document.getElementById("scrim");
-  const statModel = document.getElementById("stat-model");
   const statProvider = document.getElementById("stat-provider");
   const statStatus = document.getElementById("stat-status");
   const statTool = document.getElementById("stat-tool");
@@ -105,6 +106,9 @@
 
   function setSessionsOpen(open) {
     stage.dataset.sessionsOpen = open ? "1" : "0";
+    if (open) {
+      void loadFiles();
+    }
     const toggle = document.getElementById("sessions-toggle");
     if (toggle) {
       toggle.setAttribute("aria-expanded", open ? "true" : "false");
@@ -114,9 +118,8 @@
 
   function setStatsOpen(open) {
     stage.dataset.statsOpen = open ? "1" : "0";
-    const toggle = document.getElementById("stats-toggle");
-    if (toggle) {
-      toggle.setAttribute("aria-expanded", open ? "true" : "false");
+    for (const toggle of [document.getElementById("stats-toggle"), detailsBtn]) {
+      toggle?.setAttribute("aria-expanded", open ? "true" : "false");
     }
     syncScrim();
   }
@@ -274,21 +277,122 @@
     }, 3200);
   }
 
-  /** @param {string} deployment */
-  function setModelIdentity(deployment) {
-    const label = (deployment || "").trim() || "unset";
-    if (modelChipLabel) {
-      modelChipLabel.textContent = label;
-    }
-    if (modelChip) {
-      modelChip.title = label;
-      modelChip.setAttribute("aria-label", `Model ${label}`);
-    }
-    if (statModel) {
-      statModel.textContent = label;
-      statModel.title = label;
+  // ── Model picker ─────────────────────────────────────────
+  // The chosen model is a standing preference (localStorage), sent with
+  // every turn, so switching mid-conversation applies from the next message.
+  const MODEL_KEY = "humphrey.model";
+  /** @type {string | null} null = the provider decides (mock, Azure) */
+  let selectedModel = null;
+
+  function readStored(key) {
+    try {
+      return localStorage.getItem(key);
+    } catch {
+      return null;
     }
   }
+
+  function writeStored(key, value) {
+    try {
+      localStorage.setItem(key, value);
+    } catch {
+      /* private mode: the choice just won't persist */
+    }
+  }
+
+  /** @param {{ provider: string, selectable: boolean, default: string, models: string[] }} info */
+  function renderModelPicker(info) {
+    if (!modelSelect) {
+      return;
+    }
+    const models = info.models.length ? info.models : [info.default];
+    const stored = readStored(MODEL_KEY);
+    selectedModel = info.selectable ? (stored && models.includes(stored) ? stored : info.default) : null;
+    modelSelect.replaceChildren(
+      ...models.map((m) => {
+        const option = document.createElement("option");
+        option.value = m;
+        option.textContent = m === info.default && info.selectable && models.length > 1 ? `${m} · default` : m;
+        return option;
+      }),
+    );
+    modelSelect.value = selectedModel || info.default;
+    modelSelect.disabled = !info.selectable || models.length < 2;
+    modelSelect.title = modelSelect.value;
+    if (modelHint) {
+      const hints = {
+        mock: "Offline mock: no model is called.",
+        azure_openai: "Set by the Azure deployment.",
+        unconfigured: "Set OPENAI_API_KEY in .env.",
+      };
+      const hint = info.selectable
+        ? models.length < 2
+          ? "Add more with OPENAI_MODELS in .env."
+          : ""
+        : hints[info.provider] || "";
+      modelHint.textContent = hint;
+      modelHint.hidden = !hint;
+    }
+  }
+
+  async function loadModels() {
+    try {
+      const res = await fetch("/api/models");
+      if (res.ok) {
+        renderModelPicker(await res.json());
+      }
+    } catch {
+      /* leave the placeholder; the next probe retries */
+    }
+  }
+
+  modelSelect?.addEventListener("change", () => {
+    selectedModel = modelSelect.value;
+    modelSelect.title = selectedModel;
+    writeStored(MODEL_KEY, selectedModel);
+    showToast(
+      stage.dataset.running === "1"
+        ? `Switched to ${selectedModel} from your next message`
+        : `Switched to ${selectedModel}`,
+    );
+  });
+
+  // ── Theme ────────────────────────────────────────────────
+  const THEME_KEY = "humphrey.theme";
+  const THEME_COLOR = { dark: "#161826", light: "#f6f4f0" };
+
+  function currentTheme() {
+    return document.documentElement.dataset.theme === "light" ? "light" : "dark";
+  }
+
+  /** @param {"light" | "dark"} theme */
+  function applyTheme(theme) {
+    document.documentElement.dataset.theme = theme;
+    document.querySelector('meta[name="theme-color"]')?.setAttribute("content", THEME_COLOR[theme]);
+    if (themeToggle) {
+      const next = theme === "light" ? "dark" : "light";
+      const label = `Switch to ${next} theme`;
+      themeToggle.setAttribute("aria-label", label);
+      themeToggle.title = label;
+      themeToggle.innerHTML = `<i class="ph ph-${next === "light" ? "sun" : "moon"}" aria-hidden="true"></i>`;
+    }
+    void rethemeMermaid();
+    syncArtifactTheme();
+  }
+
+  themeToggle?.addEventListener("click", () => {
+    const next = currentTheme() === "light" ? "dark" : "light";
+    writeStored(THEME_KEY, next);
+    applyTheme(next);
+  });
+
+  // Follow the OS until the user has made an explicit choice.
+  window.matchMedia("(prefers-color-scheme: light)").addEventListener("change", (event) => {
+    const stored = readStored(THEME_KEY);
+    if (stored !== "light" && stored !== "dark") {
+      applyTheme(event.matches ? "light" : "dark");
+    }
+  });
 
   /** @param {string} summary */
   function setToolStat(summary) {
@@ -375,6 +479,7 @@
 
   function clearTranscript() {
     transcript.replaceChildren();
+    artifactCards.clear();
   }
 
   /**
@@ -396,22 +501,526 @@
     }
   }
 
-  const MERMAID_THEME = {
-    startOnLoad: false,
-    securityLevel: "strict",
-    theme: "base",
-    themeVariables: {
-      fontFamily: 'Geist, system-ui, -apple-system, "Segoe UI", sans-serif',
-      primaryColor: "#ffffff",
-      primaryTextColor: "#1a1a1a",
-      primaryBorderColor: "rgba(0,0,0,0.14)",
-      lineColor: "#737373",
-      secondaryColor: "#f3f3f5",
-      tertiaryColor: "#f7f7f8",
-      clusterBkg: "#f7f7f8",
-      clusterBorder: "#e7295d",
-    },
+  // ── Artefacts ────────────────────────────────────────────
+  // Files the agent creates or changes in its workspace, rendered inline in
+  // the transcript. The server sends an "artifact" event per change and
+  // serves the file from /api/files (sandboxed); see app/artifacts.py.
+
+  const ARTIFACT_ICONS = {
+    html: "ph-browser",
+    markdown: "ph-file-text",
+    image: "ph-image",
+    table: "ph-table",
+    diagram: "ph-graph",
+    code: "ph-file-code",
+    pdf: "ph-file-pdf",
+    file: "ph-file",
   };
+  const ARTIFACT_LABELS = {
+    html: "HTML",
+    markdown: "Markdown",
+    image: "Image",
+    table: "Table",
+    diagram: "Diagram",
+    code: "Code",
+    pdf: "PDF",
+    file: "File",
+  };
+  const SOURCE_LANG = { html: "html", markdown: "markdown", table: "csv", diagram: "mermaid" };
+  const MAX_TEXT_PREVIEW_BYTES = 1_000_000;
+  const MAX_TABLE_ROWS = 200;
+  /** Latest card per path in the visible transcript, so a new version can retire the old one. */
+  const artifactCards = new Map();
+  const artifactViewer = /** @type {HTMLDialogElement | null} */ (document.getElementById("artifact-viewer"));
+
+  /** @param {string} path */
+  function fileUrl(path, params = {}) {
+    const encoded = path.split("/").map(encodeURIComponent).join("/");
+    const query = new URLSearchParams(params).toString();
+    return `/api/files/${encoded}${query ? `?${query}` : ""}`;
+  }
+
+  /** @param {number} bytes */
+  function formatBytes(bytes) {
+    if (!Number.isFinite(bytes)) return "";
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  }
+
+  /** @param {string} path */
+  function extensionOf(path) {
+    const match = /\.([a-z0-9]+)$/i.exec(path);
+    return match ? match[1].toLowerCase() : "";
+  }
+
+  /** Minimal RFC 4180 parser: quotes, escaped quotes, newlines in fields. */
+  function parseDelimited(text, delimiter) {
+    const rows = [];
+    let row = [];
+    let field = "";
+    let quoted = false;
+    for (let i = 0; i < text.length; i += 1) {
+      const ch = text[i];
+      if (quoted) {
+        if (ch === '"' && text[i + 1] === '"') {
+          field += '"';
+          i += 1;
+        } else if (ch === '"') {
+          quoted = false;
+        } else {
+          field += ch;
+        }
+      } else if (ch === '"') {
+        quoted = true;
+      } else if (ch === delimiter) {
+        row.push(field);
+        field = "";
+      } else if (ch === "\n" || ch === "\r") {
+        if (ch === "\r" && text[i + 1] === "\n") i += 1;
+        row.push(field);
+        rows.push(row);
+        row = [];
+        field = "";
+      } else {
+        field += ch;
+      }
+    }
+    if (field || row.length) {
+      row.push(field);
+      rows.push(row);
+    }
+    return rows;
+  }
+
+  /** @param {string} text @param {string} lang */
+  function codeBlock(text, lang) {
+    const host = document.createElement("div");
+    host.className = "msg-body artifact-code";
+    const fence = text.includes("```") ? "````" : "```";
+    setMarkdown(host, `${fence}${lang}\n${text.replace(/\n$/, "")}\n${fence}`);
+    return host;
+  }
+
+  /** @param {{ path: string, size?: number }} art */
+  async function fetchArtifactText(art) {
+    if ((art.size ?? 0) > MAX_TEXT_PREVIEW_BYTES) {
+      throw new Error("too-large");
+    }
+    const res = await fetch(fileUrl(art.path, { v: String(art.mtime ?? "") }));
+    if (!res.ok) throw new Error(res.status === 404 ? "missing" : "failed");
+    return res.text();
+  }
+
+  /** @param {string} message */
+  function previewNote(message) {
+    const note = document.createElement("p");
+    note.className = "artifact-note";
+    note.textContent = message;
+    return note;
+  }
+
+  /**
+   * Fill `body` with the artefact's preview.
+   * @param {HTMLElement} body
+   * @param {any} art
+   * @param {{ full?: boolean, source?: boolean }} opts
+   */
+  async function renderArtifactPreview(body, art, opts = {}) {
+    body.replaceChildren();
+    body.dataset.kind = art.kind;
+    try {
+      if (opts.source) {
+        const lang = SOURCE_LANG[art.kind] || extensionOf(art.path) || "text";
+        body.append(codeBlock(await fetchArtifactText(art), lang));
+        return;
+      }
+      if (art.kind === "html") {
+        const frame = document.createElement("iframe");
+        frame.className = "artifact-frame";
+        frame.title = art.path;
+        frame.setAttribute("sandbox", "allow-scripts allow-popups");
+        frame.setAttribute("loading", "lazy");
+        frame.src = fileUrl(art.path, { embed: "true", theme: currentTheme(), v: String(art.mtime ?? "") });
+        if (opts.full) frame.dataset.full = "1";
+        body.append(frame);
+        return;
+      }
+      if (art.kind === "image") {
+        const img = document.createElement("img");
+        img.className = "artifact-image";
+        img.alt = art.path;
+        img.loading = "lazy";
+        img.src = fileUrl(art.path, { v: String(art.mtime ?? "") });
+        if (!opts.full) img.addEventListener("click", () => openArtifactViewer(art));
+        body.append(img);
+        return;
+      }
+      if (art.kind === "pdf") {
+        const frame = document.createElement("iframe");
+        frame.className = "artifact-frame artifact-pdf";
+        frame.title = art.path;
+        frame.src = fileUrl(art.path, { v: String(art.mtime ?? "") });
+        body.append(frame);
+        return;
+      }
+      if (art.kind === "file") {
+        body.append(previewNote("No preview for this file type. Download it to open."));
+        return;
+      }
+      const text = await fetchArtifactText(art);
+      if (art.kind === "markdown") {
+        const doc = document.createElement("div");
+        doc.className = "msg-body artifact-doc";
+        setMarkdown(doc, text);
+        body.append(doc);
+      } else if (art.kind === "diagram") {
+        const doc = document.createElement("div");
+        doc.className = "msg-body artifact-doc";
+        setMarkdown(doc, `\`\`\`mermaid\n${text}\n\`\`\``);
+        body.append(doc);
+      } else if (art.kind === "table") {
+        body.append(renderTable(text, extensionOf(art.path) === "tsv" ? "\t" : ","));
+      } else {
+        body.append(codeBlock(text, extensionOf(art.path) || "text"));
+      }
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : "";
+      body.replaceChildren(
+        previewNote(
+          reason === "too-large"
+            ? "Too large to preview. Download it to open."
+            : reason === "missing"
+              ? "This file no longer exists in the workspace."
+              : "Could not load a preview.",
+        ),
+      );
+    }
+    if (!opts.full) fitCollapsible(body);
+  }
+
+  /** @param {string} text @param {string} delimiter */
+  function renderTable(text, delimiter) {
+    const rows = parseDelimited(text, delimiter).filter((r) => r.some((c) => c.trim()));
+    const wrap = document.createElement("div");
+    wrap.className = "msg-body artifact-table";
+    if (!rows.length) {
+      wrap.append(previewNote("Empty table."));
+      return wrap;
+    }
+    const numeric = /^[-+]?[£$€]?\d[\d,]*(\.\d+)?[%kmb]?$/i;
+    const body = rows.slice(1, MAX_TABLE_ROWS + 1);
+    // A column is numeric when most of its filled cells are: those align
+    // right (header included) in tabular tan mono.
+    const numericCols = rows[0].map((_, col) => {
+      const filled = body.map((r) => (r[col] ?? "").trim()).filter(Boolean);
+      return filled.length > 0 && filled.filter((v) => numeric.test(v)).length / filled.length >= 0.8;
+    });
+    const table = document.createElement("table");
+    const thead = table.createTHead().insertRow();
+    rows[0].forEach((cell, col) => {
+      const th = document.createElement("th");
+      th.textContent = cell;
+      if (numericCols[col]) th.className = "is-num";
+      thead.append(th);
+    });
+    const tbody = table.createTBody();
+    for (const r of body) {
+      const tr = tbody.insertRow();
+      r.forEach((cell, col) => {
+        const td = tr.insertCell();
+        td.textContent = cell;
+        if (numericCols[col]) td.className = "is-num";
+      });
+    }
+    wrap.append(table);
+    if (rows.length - 1 > MAX_TABLE_ROWS) {
+      wrap.append(previewNote(`Showing ${MAX_TABLE_ROWS} of ${rows.length - 1} rows.`));
+    }
+    return wrap;
+  }
+
+  /** Long previews start clipped with a fade and a "Show all" control. */
+  function fitCollapsible(body) {
+    requestAnimationFrame(() => {
+      if (body.scrollHeight <= body.clientHeight + 8 || body.dataset.kind === "html") return;
+      body.classList.add("is-clipped");
+      const more = document.createElement("button");
+      more.type = "button";
+      more.className = "artifact-more";
+      more.textContent = "Show all";
+      more.addEventListener("click", () => {
+        body.classList.remove("is-clipped");
+        more.remove();
+      });
+      body.after(more);
+    });
+  }
+
+  /** @param {string} icon @param {string} label */
+  function artifactAction(icon, label) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "header-icon-btn artifact-action";
+    btn.setAttribute("aria-label", label);
+    btn.title = label;
+    btn.innerHTML = `<i class="ph ${icon}" aria-hidden="true"></i>`;
+    return btn;
+  }
+
+  /**
+   * Header shared by inline cards and the fullscreen viewer.
+   * @param {any} art
+   * @param {{ onSource?: (on: boolean) => void, onExpand?: () => void, onClose?: () => void }} handlers
+   */
+  function artifactHeader(art, handlers) {
+    const head = document.createElement("header");
+    head.className = "artifact-head";
+
+    const icon = document.createElement("span");
+    icon.className = "artifact-icon";
+    icon.innerHTML = `<i class="ph ${ARTIFACT_ICONS[art.kind] || "ph-file"}" aria-hidden="true"></i>`;
+
+    const title = document.createElement("div");
+    title.className = "artifact-title";
+    const name = document.createElement("span");
+    name.className = "artifact-name";
+    name.textContent = art.path;
+    const meta = document.createElement("span");
+    meta.className = "artifact-meta";
+    meta.textContent = [ARTIFACT_LABELS[art.kind] || "File", formatBytes(art.size)].filter(Boolean).join(" · ");
+    title.append(name, meta);
+
+    const actions = document.createElement("div");
+    actions.className = "artifact-actions";
+    if (handlers.onSource && SOURCE_LANG[art.kind]) {
+      const source = artifactAction("ph-code", "Show source");
+      source.setAttribute("aria-pressed", "false");
+      source.addEventListener("click", () => {
+        const on = source.getAttribute("aria-pressed") !== "true";
+        source.setAttribute("aria-pressed", on ? "true" : "false");
+        source.setAttribute("aria-label", on ? "Show preview" : "Show source");
+        source.title = on ? "Show preview" : "Show source";
+        handlers.onSource?.(on);
+      });
+      actions.append(source);
+    }
+    const open = artifactAction("ph-arrow-square-out", "Open in new tab");
+    open.addEventListener("click", () => window.open(fileUrl(art.path), "_blank", "noopener"));
+    const download = artifactAction("ph-download-simple", "Download");
+    download.addEventListener("click", () => {
+      const a = document.createElement("a");
+      a.href = fileUrl(art.path, { download: "true" });
+      a.download = art.path.split("/").pop() || "download";
+      a.click();
+    });
+    actions.append(open, download);
+    if (handlers.onExpand) {
+      const expand = artifactAction("ph-arrows-out", "Expand");
+      expand.addEventListener("click", handlers.onExpand);
+      actions.append(expand);
+    }
+    if (handlers.onClose) {
+      const close = artifactAction("ph-x", "Close");
+      close.addEventListener("click", handlers.onClose);
+      actions.append(close);
+    }
+
+    head.append(icon, title);
+    if ((art.version ?? 1) > 1) {
+      const version = document.createElement("span");
+      version.className = "artifact-version";
+      version.textContent = `v${art.version}`;
+      version.title = `Version ${art.version} of this file in this chat`;
+      head.append(version);
+    }
+    head.append(actions);
+    return head;
+  }
+
+  /**
+   * An inline artefact card. Code files start collapsed; everything else
+   * previews straight away.
+   * @param {any} art
+   * @param {{ animate?: boolean }} [opts]
+   */
+  function createArtifactCard(art, opts = {}) {
+    const card = document.createElement("section");
+    card.className = "artifact";
+    if (opts.animate !== false) card.classList.add("msg-enter");
+    card.dataset.kind = art.kind;
+    card.setAttribute("aria-label", `${ARTIFACT_LABELS[art.kind] || "File"} artefact ${art.path}`);
+
+    const body = document.createElement("div");
+    body.className = "artifact-body";
+    let source = false;
+    const head = artifactHeader(art, {
+      onSource: (on) => {
+        source = on;
+        card.querySelector(".artifact-more")?.remove();
+        void renderArtifactPreview(body, art, { source });
+      },
+      onExpand: () => openArtifactViewer(art),
+    });
+    card.append(head, body);
+
+    if (art.kind === "code") {
+      card.dataset.collapsed = "1";
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "artifact-toggle";
+      toggle.setAttribute("aria-expanded", "false");
+      toggle.innerHTML = '<i class="ph ph-caret-down" aria-hidden="true"></i><span>Show code</span>';
+      toggle.addEventListener("click", () => {
+        const open = card.dataset.collapsed === "1";
+        card.dataset.collapsed = open ? "0" : "1";
+        toggle.setAttribute("aria-expanded", open ? "true" : "false");
+        toggle.querySelector("span").textContent = open ? "Hide code" : "Show code";
+        if (open && !body.childElementCount) void renderArtifactPreview(body, art);
+      });
+      head.querySelector(".artifact-title")?.after(toggle);
+    } else {
+      void renderArtifactPreview(body, art);
+    }
+    return card;
+  }
+
+  /** Mark an earlier card for the same file as superseded: its preview would show the new content. */
+  function retireArtifactCard(path, version) {
+    const previous = artifactCards.get(path);
+    if (!previous) return;
+    previous.classList.add("is-superseded");
+    previous.querySelector(".artifact-body")?.replaceChildren();
+    previous.querySelector(".artifact-more")?.remove();
+    const meta = previous.querySelector(".artifact-meta");
+    if (meta) meta.textContent = `Updated below to v${version}`;
+  }
+
+  /**
+   * Place an artefact card: at the end of the live transcript, or before
+   * `before` when rebuilding a reopened session.
+   * @param {any} art
+   * @param {{ animate?: boolean, before?: Element | null }} [opts]
+   */
+  function placeArtifact(art, opts = {}) {
+    retireArtifactCard(art.path, art.version ?? 1);
+    const card = createArtifactCard(art, opts);
+    if (opts.before) {
+      transcript.insertBefore(card, opts.before);
+    } else {
+      transcript.append(card);
+    }
+    artifactCards.set(art.path, card);
+    return card;
+  }
+
+  /** @param {any} art */
+  function openArtifactViewer(art) {
+    if (!artifactViewer) return;
+    const body = document.createElement("div");
+    body.className = "artifact-body is-full";
+    const close = () => artifactViewer.close();
+    const head = artifactHeader(art, {
+      onSource: (on) => void renderArtifactPreview(body, art, { full: true, source: on }),
+      onClose: close,
+    });
+    artifactViewer.replaceChildren(head, body);
+    void renderArtifactPreview(body, art, { full: true });
+    artifactViewer.showModal();
+  }
+
+  artifactViewer?.addEventListener("click", (event) => {
+    if (event.target === artifactViewer) artifactViewer.close(); // backdrop click
+  });
+  artifactViewer?.addEventListener("close", () => artifactViewer.replaceChildren());
+
+  // HTML artefacts report their height from inside the sandbox.
+  window.addEventListener("message", (event) => {
+    const data = event.data;
+    if (!data || data.humphrey !== "artifact-size" || typeof data.height !== "number") return;
+    for (const frame of document.querySelectorAll("iframe.artifact-frame")) {
+      if (frame.contentWindow === event.source && frame.dataset.full !== "1") {
+        frame.style.height = `${Math.min(Math.max(data.height, 120), 880)}px`;
+      }
+    }
+  });
+
+  function syncArtifactTheme() {
+    for (const frame of document.querySelectorAll("iframe.artifact-frame:not(.artifact-pdf)")) {
+      frame.contentWindow?.postMessage({ humphrey: "theme", theme: currentTheme() }, "*");
+    }
+  }
+
+  // ── Files list (sessions rail) ───────────────────────────
+  const filesList = document.getElementById("files-list");
+
+  async function loadFiles() {
+    if (!filesList) return;
+    try {
+      const res = await fetch("/api/files");
+      if (!res.ok) return;
+      const files = await res.json();
+      filesList.replaceChildren();
+      if (!files.length) {
+        const empty = document.createElement("li");
+        empty.className = "session-empty";
+        empty.textContent = "Files Humphrey makes appear here.";
+        filesList.append(empty);
+        return;
+      }
+      for (const file of files.slice(0, 50)) {
+        const li = document.createElement("li");
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "session-item file-item";
+        btn.innerHTML = `<i class="ph ${ARTIFACT_ICONS[file.kind] || "ph-file"}" aria-hidden="true"></i>`;
+        const name = document.createElement("span");
+        name.className = "session-title";
+        name.textContent = file.path;
+        btn.append(name);
+        btn.title = `${file.path} · ${formatBytes(file.size)}`;
+        btn.addEventListener("click", () => openArtifactViewer(file));
+        li.append(btn);
+        filesList.append(li);
+      }
+    } catch {
+      /* the list just stays as it was */
+    }
+  }
+
+  /** Mermaid theme from the live CSS tokens, so diagrams follow light/dark. */
+  function mermaidTheme() {
+    const css = getComputedStyle(document.documentElement);
+    const token = (name) => css.getPropertyValue(name).trim();
+    return {
+      startOnLoad: false,
+      securityLevel: "strict",
+      theme: "base",
+      themeVariables: {
+        darkMode: currentTheme() === "dark",
+        fontFamily: token("--font-sans"),
+        background: token("--color-elevated"),
+        primaryColor: token("--color-high"),
+        primaryTextColor: token("--color-fg"),
+        primaryBorderColor: token("--hb-accent"),
+        lineColor: token("--color-muted"),
+        edgeLabelBackground: token("--color-elevated"),
+        textColor: token("--color-fg"),
+        secondaryColor: token("--color-inset"),
+        tertiaryColor: token("--color-elevated"),
+        clusterBkg: token("--color-inset"),
+        clusterBorder: token("--hb-accent"),
+        actorBkg: token("--color-high"),
+        actorBorder: token("--hb-accent"),
+        actorTextColor: token("--color-fg"),
+        signalColor: token("--color-fg-2"),
+        signalTextColor: token("--color-fg"),
+        noteBkgColor: token("--color-inset"),
+        noteTextColor: token("--color-fg"),
+        noteBorderColor: token("--color-border-strong"),
+      },
+    };
+  }
 
   /**
    * @param {any} candidate
@@ -460,7 +1069,7 @@
       if (!mermaid) {
         return null;
       }
-      mermaid.initialize(MERMAID_THEME);
+      mermaid.initialize(mermaidTheme());
       return mermaid;
     })().catch(() => {
       mermaidLoader = null;
@@ -512,6 +1121,27 @@
   }
 
   /** @param {HTMLElement} root */
+  /** Diagrams bake their colours in at render time, so redraw on theme change. */
+  async function rethemeMermaid() {
+    const rendered = [...document.querySelectorAll(".md-mermaid[data-rendered='1']")];
+    if (!rendered.length || !mermaidLoader) {
+      return;
+    }
+    const mermaid = await mermaidLoader;
+    if (!mermaid) {
+      return;
+    }
+    mermaid.initialize(mermaidTheme());
+    for (const block of rendered) {
+      const src = document.createElement("pre");
+      src.className = "md-mermaid-src";
+      src.textContent = block.dataset.source || "";
+      block.replaceChildren(src);
+      delete block.dataset.rendered;
+    }
+    await hydrateMermaid(document);
+  }
+
   async function hydrateMermaid(root) {
     const blocks = [...root.querySelectorAll(".md-mermaid:not([data-rendered='1'])")];
     if (!blocks.length) {
@@ -566,6 +1196,7 @@
         head.append(label, copyBtn);
         block.replaceChildren(head, frame);
         block.dataset.rendered = "1";
+        block.dataset.source = source;
       } catch (err) {
         document.getElementById(id)?.remove();
         block.classList.add("is-error");
@@ -1027,46 +1658,64 @@
     }
   }
 
+  /** @param {string} patch */
+  function diffStats(patch) {
+    let added = 0;
+    let removed = 0;
+    for (const line of patch.split("\n")) {
+      if (line.startsWith("+") && !line.startsWith("+++")) added += 1;
+      else if (line.startsWith("-") && !line.startsWith("---")) removed += 1;
+    }
+    return { added, removed };
+  }
+
   /**
+   * One short phrase for the card meta and activity dock.
    * @param {string} tool
    * @param {string} raw
+   * @param {{ diff?: unknown, exit_code?: unknown, is_error?: unknown }} event
    */
-  function summarizeToolResult(tool, raw) {
-    try {
-      const data = JSON.parse(raw);
-      if (data && typeof data === "object" && data.error) {
-        return String(data.error).slice(0, 120);
-      }
-      if (tool === "list_docs" && Array.isArray(data.documents)) {
-        return `${data.documents.length} document${data.documents.length === 1 ? "" : "s"}`;
-      }
-      if (tool === "search_docs") {
-        const n = Number(data.total_matches ?? data.hits?.length ?? 0);
-        return `${n} match${n === 1 ? "" : "es"}`;
-      }
-      if (tool === "read_doc" && data.path) {
-        return `${data.path} · lines ${data.start_line}–${data.end_line}`;
-      }
-      if (tool === "get_weather" && data.place) {
-        const temp = data.current?.temperature_2m;
-        return temp == null ? String(data.place) : `${data.place} · ${temp}°C`;
-      }
-      if (tool === "calculate" && "result" in data) {
-        return `= ${data.result}`;
-      }
-      if (tool === "status") {
-        const model = data.model || {};
-        const dep = model.openai?.model || model.azure?.deployment || "unset";
-        return data.mock_mode ? `mock · ${dep}` : String(dep);
-      }
-      if (tool === "capabilities" && Array.isArray(data.tools)) {
-        return `${data.tools.length} tools`;
-      }
-    } catch {
-      /* fall through */
+  function summarizeToolResult(tool, raw, event) {
+    if (tool === "edit" && typeof event.diff === "string") {
+      const { added, removed } = diffStats(event.diff);
+      return `+${added} −${removed}`;
+    }
+    if (tool === "bash" && typeof event.exit_code === "number") {
+      return `exit ${event.exit_code}`;
+    }
+    if (tool === "read" && event.is_error !== true) {
+      const lines = raw.split("\n").length;
+      return `${lines} line${lines === 1 ? "" : "s"}`;
+    }
+    if (tool === "write" && event.is_error !== true) {
+      return "written";
     }
     const flat = raw.replace(/\s+/g, " ").trim();
     return flat.length > 72 ? `${flat.slice(0, 69)}…` : flat || "done";
+  }
+
+  /**
+   * Unified diff as coloured lines (built with textContent, never innerHTML).
+   * @param {string} patch
+   */
+  function renderDiff(patch) {
+    const pre = document.createElement("pre");
+    pre.className = "tool-output tool-diff";
+    for (const line of patch.replace(/\n$/, "").split("\n")) {
+      const row = document.createElement("span");
+      row.className = line.startsWith("@@")
+        ? "diff-hunk"
+        : line.startsWith("+++") || line.startsWith("---")
+          ? "diff-file"
+          : line.startsWith("+")
+            ? "diff-add"
+            : line.startsWith("-")
+              ? "diff-del"
+              : "diff-ctx";
+      row.textContent = `${line}\n`;
+      pre.append(row);
+    }
+    return pre;
   }
 
   /**
@@ -1090,8 +1739,31 @@
     return `${display}(${parts.join(", ")}${more})`;
   }
 
+  // Header band: on while any tool runs, held briefly so sub-second tools
+  // still read as "something ran" instead of a flicker.
+  const TOOL_BAND_MIN_MS = 900;
+  let toolBandSince = 0;
+  let toolBandTimer = 0;
+
+  /** @param {boolean} running */
+  function setToolsRunning(running) {
+    window.clearTimeout(toolBandTimer);
+    if (running) {
+      if (stage.dataset.tools !== "1") {
+        toolBandSince = performance.now();
+        stage.dataset.tools = "1";
+      }
+      return;
+    }
+    const remaining = TOOL_BAND_MIN_MS - (performance.now() - toolBandSince);
+    toolBandTimer = window.setTimeout(() => {
+      stage.dataset.tools = "0";
+    }, Math.max(0, remaining));
+  }
+
   function refreshActivityDock() {
     const running = [...liveTools.values()].filter((t) => t.el.dataset.state === "running");
+    setToolsRunning(running.length > 0);
     if (!running.length) {
       activityDock.hidden = true;
       activityList.replaceChildren();
@@ -1174,8 +1846,8 @@
   }
 
   /**
-   * Repeat calls to the same tool within one turn (e.g. get_weather
-   * for several places) collapse into one cluster
+   * Repeat calls to the same tool within one turn (e.g. read
+   * across several files) collapse into one cluster
    * instead of stacking up as separate panels - the thing that made a busy
    * turn feel overwhelming. A lone call is unaffected: the cluster's own
    * summary line stays hidden until a second call of the same tool shows up,
@@ -1277,7 +1949,8 @@
     updateStats();
     const panelId = `tool-panel-${toolSeq}`;
     const display = label || tool;
-    const signature = toolSignature(display, args);
+    // A templated label ("Reading {path}") already names its arguments.
+    const signature = label && label !== tool ? label : toolSignature(tool, args);
 
     const row = document.createElement("div");
     row.className = "tool msg-enter";
@@ -1399,7 +2072,7 @@
    * does not tear the CSSAnimation down just because data-state stops
    * matching `[data-state="running"]` in the cascade - getComputedStyle and
    * getAnimations() both keep reporting it as playing indefinitely, so the
-   * dot goes on visibly pulsing pink long after the row reads "done"/"error".
+   * dot goes on visibly pulsing long after the row reads "done"/"error".
    * Cancelling it explicitly is the only reliable fix. No-op for a dot whose
    * animation never actually started (fast calls that resolved before a
    * paint), and safe on browsers without getAnimations().
@@ -1418,7 +2091,7 @@
   /**
    * A run can end (stop button, network drop, server error) while a tool call
    * is still in flight, so it never gets the tool_end that would move it off
-   * data-state="running" - left alone, its dot pulses pink forever even
+   * data-state="running" - left alone, its dot pulses forever even
    * though the run itself is long over. Called once per run, from the
    * sendPrompt finally block, to settle anything still marked running.
    * @param {{ toolEls: Map<string, any>, toolClusters: Map<string, any> }} state
@@ -1634,17 +2307,28 @@
         }
       }
       setToolStat("—");
+      /** @type {{ ts: number, el: Element }[]} */
+      const placed = [];
       for (const msg of rows) {
+        let el;
         if (msg.role === "context_summary") {
-          appendMessage("context-summary", msg.content, { animate: false });
-          continue;
-        }
-        if (msg.role === "user") {
-          charsIn += msg.content.length;
+          el = appendMessage("context-summary", msg.content, { animate: false });
         } else {
-          charsOut += msg.content.length;
+          if (msg.role === "user") {
+            charsIn += msg.content.length;
+          } else {
+            charsOut += msg.content.length;
+          }
+          el = appendMessage(msg.role, msg.content, { animate: false });
         }
-        appendMessage(msg.role, msg.content, { animate: false });
+        if (el && typeof msg.ts === "number") placed.push({ ts: msg.ts, el });
+      }
+      // Artefacts go back where they happened: before the first message
+      // newer than them (so after the request, before the reply).
+      const artifacts = Array.isArray(data.artifacts) ? data.artifacts : [];
+      for (const art of [...artifacts].sort((a, b) => (a.created_ms ?? 0) - (b.created_ms ?? 0))) {
+        const next = placed.find((row) => row.ts > (art.created_ms ?? 0));
+        placeArtifact(art, { animate: false, before: next ? next.el : null });
       }
       setActive(messages.length > 0);
       setRunning(false);
@@ -1693,13 +2377,7 @@
           : data.mock_mode
             ? "mock"
             : "azure";
-      const deployment =
-        typeof data.deployment === "string" && data.deployment.trim()
-          ? data.deployment.trim()
-          : data.mock_mode
-            ? "mock"
-            : "unset";
-      setModelIdentity(deployment);
+      await loadModels();
       if (statProvider) {
         statProvider.textContent = provider;
       }
@@ -1771,6 +2449,16 @@
   function applyEvent(event, state) {
     const type = String(event.type ?? "");
 
+    if (type === "artifact") {
+      placeArtifact(event);
+      // Later tools in this turn start a fresh group below the card, so the
+      // transcript stays in the order things happened.
+      state.toolGroupEl = null;
+      void loadFiles();
+      pinToBottom();
+      return;
+    }
+
     if (type === "agent_start") {
       if (typeof event.session_id === "string" && event.session_id) {
         sessionId = event.session_id;
@@ -1832,9 +2520,6 @@
     }
 
     if (type === "message_end") {
-      if (typeof event.deployment === "string" && event.deployment.trim()) {
-        setModelIdentity(event.deployment.trim());
-      }
       if (event.usage && typeof event.usage === "object") {
         // Each turn's usage.input is already a cumulative count (the whole
         // transcript is resent every call), so the latest turn's numbers ARE
@@ -1947,9 +2632,16 @@
       }
 
       const ms = Math.max(1, Math.round(performance.now() - card.started));
-      const blurb = summarizeToolResult(tool, rawResult);
+      const blurb = summarizeToolResult(tool, rawResult, event);
       const isError = event.is_error === true;
-      card.meta.textContent = `${ms} ms`;
+      // Edits and shell runs carry their outcome on the row itself.
+      card.meta.textContent = tool === "edit" || tool === "bash" ? `${blurb} · ${ms} ms` : `${ms} ms`;
+      if (typeof event.diff === "string" && event.diff) {
+        const diffLabel = document.createElement("span");
+        diffLabel.className = "tool-section-label";
+        diffLabel.textContent = "Changes";
+        (card.output.previousElementSibling || card.output).before(diffLabel, renderDiff(event.diff));
+      }
       card.el.dataset.state = isError ? "error" : "done";
       stopDotPulse(card.el);
       card.preview = blurb;
@@ -2035,7 +2727,10 @@
       return;
     }
 
-    if (activeRun && sessionId && !opts.fromQueue) {
+    // Once agent_end has arrived the server has no run to queue onto (the
+    // stream may still be open while it names the session), so only
+    // post to the server queue mid-turn; otherwise queue locally below.
+    if (activeRun && sessionId && !opts.fromQueue && stage.dataset.running === "1") {
       const kind = opts.steer ? "steer" : "follow-up";
       if (await postQueue(kind, text)) {
         return;
@@ -2121,6 +2816,7 @@
         body: JSON.stringify({
           messages,
           session_id: sessionId,
+          ...(selectedModel ? { model: selectedModel } : {}),
         }),
         signal: controller.signal,
       });
@@ -2207,6 +2903,10 @@
   document.getElementById("stats-collapse")?.addEventListener("click", () => {
     setStatsOpen(false);
   });
+  detailsBtn?.addEventListener("click", () => {
+    setStatsOpen(stage.dataset.statsOpen !== "1");
+  });
+  applyTheme(currentTheme());
   scrim?.addEventListener("click", () => {
     setSessionsOpen(false);
     setStatsOpen(false);
@@ -2274,6 +2974,9 @@
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") {
       return;
+    }
+    if (artifactViewer?.open) {
+      return; // the dialog closes itself; don't also stop the run
     }
     if (stage.dataset.sessionsOpen === "1") {
       event.preventDefault();

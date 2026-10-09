@@ -1,7 +1,7 @@
 """The tool contract the portable agent loop depends on.
 
 Only the protocol/shape lives here (mirrors tau_agent/tools.py) - the
-concrete Humphrey tools (status, get_weather, etc.) are an
+concrete Humphrey tools (read, write, edit, bash) are an
 application concern and live in app/tools/, built on top of AgentTool.
 """
 
@@ -84,7 +84,7 @@ class AgentTool:
         return self.prompt_snippet or self.description
 
     def label_for(self, args: Mapping[str, Any] | None = None) -> str:
-        values = {k: str(v)[:48] for k, v in (args or {}).items()}
+        values = {k: _shorten(str(v)) for k, v in (args or {}).items()}
         try:
             return self.label.format_map(_SafeFormat(values))
         except Exception:  # noqa: BLE001
@@ -106,6 +106,19 @@ class AgentTool:
             "required": list(self.required),
             "additionalProperties": False,
         }
+
+
+
+_LABEL_VALUE_MAX = 48
+
+
+def _shorten(value: str) -> str:
+    """Trim a label value; paths keep their tail, where the file name is."""
+    if len(value) <= _LABEL_VALUE_MAX:
+        return value
+    if "/" in value and " " not in value:
+        return "…" + value[-(_LABEL_VALUE_MAX - 1) :]
+    return value[:_LABEL_VALUE_MAX]
 
 
 class _SafeFormat(dict[str, str]):

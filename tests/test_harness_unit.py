@@ -65,7 +65,7 @@ async def test_before_tool_call_blocks_execution() -> None:
             before_tool_call=block,
         )
     )
-    events = [e async for e in harness.prompt("status")]
+    events = [e async for e in harness.prompt("list files")]
     assert any(isinstance(e, ToolExecutionStartEvent) for e in events)
     ends = [e for e in events if isinstance(e, ToolExecutionEndEvent)]
     assert ends[0].is_error is True
@@ -76,7 +76,7 @@ async def test_before_tool_call_blocks_execution() -> None:
 async def test_cancel_stops_stream_and_emits_agent_end() -> None:
     harness = AgentHarness(AgentHarnessConfig(provider=MockProvider(), system="test", tools=list(TOOLS)))
     events = []
-    # Avoid the substring "tool" — mock keyword match is naive.
+    # Avoid mock tool trigger phrases ("list files", "workspace", ...).
     stream = harness.prompt("greetings from the test")
     async for event in stream:
         events.append(event)

@@ -34,7 +34,7 @@ async def test_follow_up_drains_after_settle() -> None:
 async def test_steer_injects_after_tool_turn() -> None:
     harness = AgentHarness(AgentHarnessConfig(provider=MockProvider(), system="test", tools=list(TOOLS)))
     events = []
-    stream = harness.prompt("what is your status?")
+    stream = harness.prompt("list files")
     async for event in stream:
         events.append(event)
         if isinstance(event, ToolExecutionStartEvent) and harness.queued_messages.count == 0:

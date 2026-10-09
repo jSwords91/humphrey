@@ -43,6 +43,7 @@ class ChatMessage:
 
     role: str
     content: str
+    ts: int | None = None
 
 
 @dataclass(slots=True)
@@ -52,11 +53,14 @@ class Session:
     created_at: str = field(default_factory=utc_now)
     updated_at: str = field(default_factory=utc_now)
     title: str | None = None
+    # Files the agent created or changed (app/artifacts.py), in order, each
+    # with created_ms so the UI can place it back in the transcript.
+    artifacts: list[dict[str, Any]] = field(default_factory=list)
     schema_version: int = SESSION_SCHEMA_VERSION
 
     def ui_chat_messages(self) -> list[ChatMessage]:
         return [
-            ChatMessage(role=row["role"], content=row["content"])
+            ChatMessage(role=row["role"], content=row["content"], ts=row.get("ts"))
             for row in ui_messages(self.messages)
         ]
 
@@ -68,6 +72,7 @@ class Session:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "title": self.title,
+            "artifacts": self.artifacts,
         }
 
     @classmethod
@@ -111,6 +116,7 @@ class Session:
             created_at=str(data.get("created_at") or utc_now()),
             updated_at=str(data.get("updated_at") or utc_now()),
             title=data.get("title"),
+            artifacts=[a for a in data.get("artifacts") or [] if isinstance(a, dict)],
             schema_version=max(version, SESSION_SCHEMA_VERSION),
         )
 

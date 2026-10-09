@@ -222,9 +222,13 @@ def message_from_dict(data: dict[str, Any]) -> AgentMessage | None:
 COMPACTION_SUMMARY_PREFIX = "Previous conversation summary:\n"
 
 
-def ui_messages(messages: list[AgentMessage]) -> list[dict[str, str]]:
-    """Project transcript to user/assistant text pairs for the web UI."""
-    out: list[dict[str, str]] = []
+def ui_messages(messages: list[AgentMessage]) -> list[dict[str, Any]]:
+    """Project transcript to user/assistant text pairs for the web UI.
+
+    Each row carries its message's ``ts`` (ms) so the UI can interleave
+    other timestamped items, such as artefacts, in order.
+    """
+    out: list[dict[str, Any]] = []
     for message in messages:
         if isinstance(message, UserMessage):
             text = message.text.strip()
@@ -236,7 +240,7 @@ def ui_messages(messages: list[AgentMessage]) -> list[dict[str, str]]:
                 # docstring on ImageContent: kept out of the UI projection
                 # to avoid bloating every session-list/reload payload).
                 noun = "image" if image_count == 1 else "images"
-                out.append({"role": "user", "content": f"(sent {image_count} {noun})"})
+                out.append({"role": "user", "content": f"(sent {image_count} {noun})", "ts": message.timestamp_ms})
                 continue
             if not text:
                 continue
@@ -245,6 +249,7 @@ def ui_messages(messages: list[AgentMessage]) -> list[dict[str, str]]:
                     {
                         "role": "context_summary",
                         "content": text.removeprefix(COMPACTION_SUMMARY_PREFIX),
+                        "ts": message.timestamp_ms,
                     }
                 )
             else:
@@ -254,11 +259,11 @@ def ui_messages(messages: list[AgentMessage]) -> list[dict[str, str]]:
                 if image_count:
                     noun = "image" if image_count == 1 else "images"
                     text = f"{text}\n(+{image_count} {noun} attached)"
-                out.append({"role": "user", "content": text})
+                out.append({"role": "user", "content": text, "ts": message.timestamp_ms})
         elif isinstance(message, AssistantMessage):
             text = message.text.strip()
             if text and message.stop_reason not in {"error", "aborted"}:
-                out.append({"role": "assistant", "content": text})
+                out.append({"role": "assistant", "content": text, "ts": message.timestamp_ms})
     return out
 
 

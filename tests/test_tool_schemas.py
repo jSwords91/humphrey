@@ -16,17 +16,21 @@ def test_all_tools_have_object_parameter_schema() -> None:
         assert isinstance(params.get("required"), list)
 
 
-def test_read_doc_schema_includes_path() -> None:
+def test_tools_are_exactly_taus_four() -> None:
+    assert [t.name for t in TOOLS] == ["read", "write", "edit", "bash"]
+
+
+def test_read_schema_requires_path() -> None:
     schemas = {row["function"]["name"]: row["function"]["parameters"] for row in tools_to_openai(list(TOOLS))}
-    read_schema = schemas["read_doc"]
+    read_schema = schemas["read"]
     assert read_schema["type"] == "object"
     assert "path" in read_schema["properties"]
-    assert "path" in read_schema["required"]
+    assert read_schema["required"] == ["path"]
 
 
-def test_read_skill_schema_includes_name() -> None:
-    schemas = {row["function"]["name"]: row["function"]["parameters"] for row in tools_to_openai(list(TOOLS))}
-    read_schema = schemas["read_skill"]
-    assert read_schema["type"] == "object"
-    assert "name" in read_schema["properties"]
-    assert "name" in read_schema["required"]
+def test_long_path_labels_keep_the_file_name() -> None:
+    read = next(t for t in TOOLS if t.name == "read")
+    label = read.label_for({"path": "/very/long/install/prefix/somewhere/skills/mermaid-diagrams/SKILL.md"})
+    assert label.startswith("Reading …")
+    assert label.endswith("mermaid-diagrams/SKILL.md")
+    assert read.label_for({"path": "notes.md"}) == "Reading notes.md"

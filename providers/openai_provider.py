@@ -29,13 +29,13 @@ class OpenAIProvider:
     can sit behind the harness.
     """
 
-    def __init__(self, settings: Settings | None = None) -> None:
+    def __init__(self, settings: Settings | None = None, model: str | None = None) -> None:
         self._settings = settings or get_settings()
         if not self._settings.openai_api_configured:
             raise RuntimeError(
                 "OPENAI_API_KEY must be set. For offline work set HUMPHREY_MOCK=1."
             )
-        self._model = self._settings.openai_model
+        self._model = model or self._settings.openai_model
 
     @property
     def deployment_name(self) -> str:

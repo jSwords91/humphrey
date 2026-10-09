@@ -1,13 +1,11 @@
 """Markdown skill loading and expansion — ported from tau_coding.skills.
 
 A skill is a directory containing a ``SKILL.md`` (tau's Agent Skills spec).
-Humphrey ships exactly one skills directory baked into the image (like
-``knowledge/``) rather than tau's precedence-ordered user/project directories
-— there is no end-user filesystem here to layer over. Skills are also
-self-contained text: unlike tau, there is no generic file-read tool for the
-model to follow relative references to sibling assets, so the model pulls in
-a skill's full body through the dedicated ``read_skill`` tool instead of a
-file path.
+Humphrey ships exactly one skills directory rather than tau's
+precedence-ordered user/project directories. As in tau, the system prompt
+lists each skill's name, description, and file location, and the model loads
+one with the ``read`` tool when a task matches, resolving any relative paths
+in it against the skill's own directory.
 """
 
 from __future__ import annotations
@@ -140,7 +138,7 @@ def get_skill(name: str, skills: Sequence[Skill] | None = None) -> Skill | None:
 
 
 def format_skills_for_prompt(skills: Sequence[Skill] | None = None) -> str:
-    """Build the <available_skills> system-prompt index (name + description only).
+    """Build the <available_skills> system-prompt index (name, description, location).
 
     Skills with ``disable_model_invocation`` are excluded — they remain
     invocable explicitly via ``/skill:<name>``.
@@ -150,8 +148,10 @@ def format_skills_for_prompt(skills: Sequence[Skill] | None = None) -> str:
         return ""
     lines = [
         "\n\nThe following skills provide specialized instructions for specific tasks.",
-        "When a task matches a skill's description, call read_skill with its name to load",
-        "the full instructions, then follow them for the rest of the turn.",
+        "When a task matches a skill's description, use the read tool to load the file at",
+        "its location, then follow its instructions for the rest of the turn. When a skill",
+        "refers to a relative path, resolve it against the skill's directory (the parent of",
+        "SKILL.md) and use that absolute path.",
         "",
         "<available_skills>",
     ]
@@ -162,6 +162,7 @@ def format_skills_for_prompt(skills: Sequence[Skill] | None = None) -> str:
                 "  <skill>",
                 f"    <name>{escape(skill.name)}</name>",
                 f"    <description>{escape(description)}</description>",
+                f"    <location>{escape(str(skill.path))}</location>",
                 "  </skill>",
             ]
         )
@@ -172,7 +173,8 @@ def format_skills_for_prompt(skills: Sequence[Skill] | None = None) -> str:
 def format_skill_invocation(skill: Skill, additional_instructions: str | None = None) -> str:
     """Format a full skill invocation prompt (tau's ``<skill>`` block shape)."""
     skill_block = (
-        f'<skill name="{skill.name}" location="{skill.path.name}">\n'
+        f'<skill name="{skill.name}" location="{skill.path}">\n'
+        f"References are relative to {skill.path.parent}.\n\n"
         f"{skill.content.strip()}\n"
         "</skill>"
     )

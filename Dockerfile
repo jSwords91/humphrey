@@ -17,7 +17,6 @@ COPY brain ./brain
 COPY providers ./providers
 COPY app ./app
 COPY frontend ./frontend
-COPY knowledge ./knowledge
 COPY skills ./skills
 
 EXPOSE 8000

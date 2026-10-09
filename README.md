@@ -24,8 +24,9 @@ uv sync
 uv run uvicorn app.main:app --reload --port 8001
 ```
 
-Then open http://localhost:8001. `OPENAI_MODEL` picks the model. To try it
-without a key, set `HUMPHREY_MOCK=1` instead.
+Then open http://localhost:8001. `OPENAI_MODEL` is the default model;
+list more in `OPENAI_MODELS` (comma-separated) to switch between them from
+the Details pane. To try it without a key, set `HUMPHREY_MOCK=1` instead.
 
 Tests run offline in mock mode:
 
@@ -47,27 +48,55 @@ docker compose up --build
 | `brain/` | Portable agent core: messages, loop, harness, typed events, tool protocol |
 | `providers/` | Model adapters: OpenAI (Chat Completions and Responses), mock, optional Azure OpenAI |
 | `app/` | The application: API, tools, skills, prompt, sessions, storage, SSE rendering |
-| `app/tools/` | Tool handlers and the registered tool list (`__init__.py`) |
+| `app/tools/` | The tools (`tau_ported.py`) and the registered list (`__init__.py`) |
 | `frontend/` | Static chat UI |
-| `knowledge/` | Markdown docs the model can list, search, and read |
 | `skills/` | One directory per skill, each with a `SKILL.md` |
+| `workspace/` | Where the tools read, write, and run commands (gitignored) |
 
 ## Tools
 
+Humphrey has tau's four coding tools, and nothing else:
+
 | Tool | Purpose |
 | --- | --- |
-| `capabilities`, `status` | What the agent can do, and its live config |
-| `list_docs`, `read_doc`, `search_docs` | Bundled knowledge docs |
-| `read_skill`, `read_skill_asset` | Load a skill, or a file shipped with it |
-| `get_weather` | Weather for a named place (Open-Meteo, no API key) |
-| `calculate` | Safe arithmetic evaluation |
+| `read` | Read a text file, with offset/limit for large files |
+| `write` | Create or overwrite a file |
+| `edit` | Exact text replacements in a file (shown as a diff in the UI) |
+| `bash` | Run a shell command |
 
-`get_weather` and `calculate` are small examples to copy when adding your own:
-write a handler in `app/tools/` that takes a dict and returns a JSON string,
-then register it with `_tool(...)` in `app/tools/__init__.py`.
+They work in `workspace/` (or `HUMPHREY_WORKSPACE`), so relative paths land
+there and the agent can't rewrite Humphrey's own code. Skills are loaded the
+tau way: the prompt lists each `SKILL.md` path and the model reads it with
+`read`.
 
-`app/tools/tau_ported.py` contains read/write/edit/bash tools that are
-deliberately not registered. Enabling them needs sandboxing first.
+**`bash` runs whatever command the model chooses, with no allowlist.** Run
+Humphrey somewhere you're comfortable with that (the Docker setup is a good
+default) and don't expose its port beyond your machine; `docker-compose.yml`
+binds it to localhost for this reason.
+
+## Artefacts
+
+Any file the agent creates or changes in the workspace (via `write`, `edit`,
+or a `bash` command such as a script that saves a chart) appears inline in
+the conversation as an artefact card, and comes back in place when you reopen
+the chat. Previews by type:
+
+| Files | Preview |
+| --- | --- |
+| `.html` | Live, in a sandboxed frame that sizes to fit and follows the light/dark toggle |
+| `.md` | Rendered Markdown, including tables and Mermaid |
+| images, `.svg` | Image, click to zoom |
+| `.csv` `.tsv` | Table with numeric columns right-aligned |
+| `.mmd` | Rendered diagram |
+| code and text | Highlighted source (collapsed until opened) |
+| `.pdf` | The browser's PDF viewer |
+
+Each card can show its source, open in a new tab, download, or expand to
+fullscreen. All workspace files are also listed under Files in the sessions
+rail. The `html-artifacts` skill teaches the model to build charts and
+dashboards in Humphrey's palette with the vendored Chart.js
+(`/vendor/chart.umd.min.js`). Files are served from `/api/files` under a CSP
+sandbox: HTML can run scripts but never call Humphrey's API.
 
 ## Storage backend
 

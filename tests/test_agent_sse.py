@@ -105,10 +105,10 @@ async def test_resending_a_long_past_assistant_reply_does_not_422(client: AsyncC
 
 
 @pytest.mark.asyncio
-async def test_tool_turn_status(client: AsyncClient) -> None:
+async def test_tool_turn_bash(client: AsyncClient) -> None:
     response = await client.post(
         "/api/agent",
-        json={"messages": [{"role": "user", "content": "what is your status?"}]},
+        json={"messages": [{"role": "user", "content": "list files please"}]},
     )
     assert response.status_code == 200
     events = _parse_sse(response.text)
@@ -120,20 +120,23 @@ async def test_tool_turn_status(client: AsyncClient) -> None:
     assert "tool_end" in types
 
     starts = [e for e in events if e["type"] == "tool_start"]
-    assert starts[0]["tool"] == "status"
+    assert starts[0]["tool"] == "bash"
+    assert starts[0]["label"] == "Listing workspace files"
     ends = [e for e in events if e["type"] == "tool_end"]
     assert ends[0]["call_id"] == starts[0]["call_id"]
-    assert "mock_mode" in (ends[0].get("result") or "")
+    assert ends[0]["exit_code"] == 0
 
     # Final assistant prose after tools
     assert types.index("tool_end") < max(i for i, t in enumerate(types) if t == "message_delta")
 
 
 @pytest.mark.asyncio
-async def test_calculate_tool_runs_via_tool_call(client: AsyncClient) -> None:
+async def test_write_tool_writes_into_the_workspace(client: AsyncClient) -> None:
+    from app.tools import WORKSPACE_DIR
+
     response = await client.post(
         "/api/agent",
-        json={"messages": [{"role": "user", "content": "calculate something for me"}]},
+        json={"messages": [{"role": "user", "content": "please write a note"}]},
     )
     assert response.status_code == 200
     events = _parse_sse(response.text)
@@ -141,11 +144,11 @@ async def test_calculate_tool_runs_via_tool_call(client: AsyncClient) -> None:
 
     assert "tool_start" in types
     starts = [e for e in events if e["type"] == "tool_start"]
-    assert starts[0]["tool"] == "calculate"
+    assert starts[0]["tool"] == "write"
 
     ends = [e for e in events if e["type"] == "tool_end"]
     assert ends[0]["is_error"] is False
-    assert '"result": 14' in (ends[0].get("result") or "")
+    assert "please write a note" in (WORKSPACE_DIR / "notes.md").read_text()
 
 
 @pytest.mark.asyncio
@@ -159,8 +162,8 @@ async def test_mermaid_skill_triggers_via_tool_call(client: AsyncClient) -> None
 
     starts = [e for e in events if e["type"] == "tool_start"]
     assert starts
-    assert starts[0]["tool"] == "read_skill"
-    assert starts[0]["args"]["name"] == "mermaid-diagrams"
+    assert starts[0]["tool"] == "read"
+    assert starts[0]["args"]["path"].endswith("mermaid-diagrams/SKILL.md")
 
     ends = [e for e in events if e["type"] == "tool_end"]
     assert ends[0]["is_error"] is False
@@ -200,7 +203,7 @@ async def test_explicit_skill_command_unknown_skill_returns_422(client: AsyncCli
 async def test_session_persists_full_transcript(client: AsyncClient) -> None:
     response = await client.post(
         "/api/agent",
-        json={"messages": [{"role": "user", "content": "status please"}]},
+        json={"messages": [{"role": "user", "content": "list files please"}]},
     )
     session_id = response.headers["x-session-id"]
     events = _parse_sse(response.text)

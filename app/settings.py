@@ -39,12 +39,14 @@ class Settings:
     azure_openai_api_version: str
     openai_api_key: str
     openai_model: str
+    openai_models: tuple[str, ...]
     reasoning_effort: str | None
     storage_account_url: str
     ai_logs_container: str
     sessions_prefix: str
     storage_backend: StorageBackend
     local_storage_dir: str
+    workspace_dir: str
     context_window_tokens: int
 
     @property
@@ -54,6 +56,11 @@ class Settings:
     @property
     def openai_api_configured(self) -> bool:
         return bool(self.openai_api_key)
+
+    @property
+    def selectable_models(self) -> tuple[str, ...]:
+        """Models a user may pick per request: the default plus OPENAI_MODELS."""
+        return tuple(dict.fromkeys((self.openai_model, *self.openai_models)))
 
     @property
     def azure_storage_configured(self) -> bool:
@@ -69,6 +76,9 @@ def get_settings() -> Settings:
         azure_openai_api_version=os.environ.get("AZURE_OPENAI_API_VERSION", "2024-10-21"),
         openai_api_key=os.environ.get("OPENAI_API_KEY", ""),
         openai_model=os.environ.get("OPENAI_MODEL", "gpt-5.6-sol"),
+        openai_models=tuple(
+            m.strip() for m in os.environ.get("OPENAI_MODELS", "").split(",") if m.strip()
+        ),
         # Defaults to "medium" rather than leaving this unset: an unset
         # value doesn't just mean "the model picks its own effort level" -
         # build_responses_payload() only adds the `reasoning` field at all
@@ -86,6 +96,10 @@ def get_settings() -> Settings:
         # data/ is gitignored.
         local_storage_dir=os.environ.get("LOCAL_STORAGE_DIR", "").strip()
         or str(Path(__file__).resolve().parent.parent / "data"),
+        # Where the read/write/edit/bash tools work. Deliberately not the repo
+        # root, so the agent can't rewrite the app it is running in.
+        workspace_dir=os.environ.get("HUMPHREY_WORKSPACE", "").strip()
+        or str(Path(__file__).resolve().parent.parent / "workspace"),
         # One configured constant rather than tau's per-model catalog lookup
         # (RuntimeModelCatalog) - deliberately simpler, see context_window.py's
         # module docstring. 128k covers every model this app currently uses.

@@ -15,8 +15,9 @@ venv/
 .ruff_cache/
 .mypy_cache/
 
-# Local session storage (STORAGE_BACKEND=local)
+# Local session storage (STORAGE_BACKEND=local) and the agent's workspace
 data/
+workspace/
 
 # Secrets — never commit a real .env
 .env

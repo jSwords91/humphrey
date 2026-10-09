@@ -5,12 +5,15 @@
 # Set OPENAI_API_KEY (or HUMPHREY_MOCK=1) in .env; see .env.example.
 #
 # Sessions are JSON files under ./data, bind-mounted below so they survive
-# restarts.
+# restarts. The agent's read/write/edit/bash tools work in ./workspace.
+#
+# The bash tool runs any command the model chooses inside this container, so
+# the port is bound to localhost only: don't publish it on your network.
 services:
   humphrey:
     build: .
     ports:
-      - "8001:8000"
+      - "127.0.0.1:8001:8000"
     env_file:
       - path: .env
         required: false
@@ -20,6 +23,7 @@ services:
       - ./brain:/app/brain:ro
       - ./providers:/app/providers:ro
       - ./data:/app/data
+      - ./workspace:/app/workspace
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz')"]
       interval: 10s

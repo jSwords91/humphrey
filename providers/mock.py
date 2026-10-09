@@ -6,6 +6,7 @@ import asyncio
 import json
 import uuid
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 
 from brain.cancel import CancellationToken
@@ -14,20 +15,17 @@ from brain.provider import ModelChunk, ToolCallDelta
 from brain.tools import AgentTool
 
 
+_MERMAID_SKILL = Path(__file__).resolve().parent.parent / "skills" / "mermaid-diagrams" / "SKILL.md"
+
+
 def _pick_tool(latest: str) -> tuple[str, dict[str, Any]] | None:
     lower = latest.lower()
     if any(t in lower for t in ("architecture", "diagram", "how is this wired", "how it flows")):
-        return "read_skill", {"name": "mermaid-diagrams"}
-    if any(t in lower for t in ("status", "health", "deployment", "config", "environment")):
-        return "status", {}
-    if any(t in lower for t in ("calculate", "compute")):
-        return "calculate", {"expression": "(3 + 4) * 2"}
-    if any(t in lower for t in ("storage", "skill", "how do")):
-        return "search_docs", {"query": latest[:80]}
-    if any(t in lower for t in ("capabilit", "tool", "what can you", "help")):
-        return "capabilities", {}
-    if any(t in lower for t in ("doc", "readme", "knowledge", "platform")):
-        return "list_docs", {}
+        return "read", {"path": str(_MERMAID_SKILL)}
+    if any(t in lower for t in ("write a note", "save a note", "create a file")):
+        return "write", {"path": "notes.md", "content": f"# Note\n\n{latest}\n"}
+    if any(t in lower for t in ("list files", "workspace", "what files")):
+        return "bash", {"command": "ls -la", "description": "Listing workspace files"}
     return None
 
 
@@ -117,7 +115,7 @@ class MockProvider:
                 "Offline mock provider — no model was called.\n\n"
                 f"You asked: {preview}\n\n"
                 f"{image_note}"
-                "Try **capabilities**, **status**, **calculate**, or **list docs**."
+                "Try **list files**, **write a note**, or **draw a diagram**."
             )
 
         chunk_size = 28

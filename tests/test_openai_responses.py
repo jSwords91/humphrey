@@ -25,11 +25,16 @@ def test_uses_responses_api_matches_known_reasoning_models() -> None:
     assert uses_responses_api("gpt-5.6") is True
     assert uses_responses_api("gpt-5.4-mini") is True
     assert uses_responses_api("GPT-5.5-preview") is True  # case-insensitive
+    assert uses_responses_api("gpt-6-sol") is True
+    assert uses_responses_api("gpt-6.1-sol") is True
+    assert uses_responses_api("o4-mini") is True
 
 
 def test_uses_responses_api_false_for_non_reasoning_models() -> None:
     assert uses_responses_api("gpt-4o-mini") is False
     assert uses_responses_api("gpt-4o") is False
+    assert uses_responses_api("gpt-5.3-chat-latest") is False
+    assert uses_responses_api("gpt-60") is False  # family match, not a bare prefix
 
 
 def test_messages_to_responses_input_maps_roles() -> None:
@@ -233,3 +238,22 @@ def test_parser_error_event_raises() -> None:
 def test_parser_unknown_event_is_ignored() -> None:
     parser = ResponsesStreamParser()
     assert parser.feed({"type": "response.some_future_event"}) is None
+
+
+def test_reasoning_from_a_different_model_is_not_replayed() -> None:
+    """Switching models mid-conversation must not hand one model another's
+    encrypted reasoning; the visible text still carries over."""
+    raw_item = {"type": "reasoning", "id": "rs_1", "summary": []}
+    messages = [
+        AssistantMessage(
+            model="gpt-a",
+            content=[
+                ThinkingContent(thinking="hmm", thinking_signature=json.dumps(raw_item)),
+                TextContent(text="answer"),
+            ],
+        ),
+    ]
+    assert messages_to_responses_input(messages, model="gpt-a")[0] == raw_item
+    assert messages_to_responses_input(messages, model="gpt-b") == [
+        {"role": "assistant", "content": "answer"}
+    ]

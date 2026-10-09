@@ -1,8 +1,7 @@
 """app/tools/tau_ported.py: ported-from-tau read/write/edit/bash tools.
 
-These are NOT part of app.tools.TOOLS (see that module's docstring) - this
-file only proves the ported implementations themselves are correct, not that
-they're wired into anything.
+These are Humphrey's tools (app.tools.TOOLS). Each test roots them in its own
+tmp_path, so nothing here touches the real workspace.
 """
 
 from __future__ import annotations
@@ -21,10 +20,12 @@ from app.tools.tau_ported import (
 )
 
 
-def test_tau_tools_are_not_registered_in_active_tools() -> None:
-    tau_names = {t.name for t in create_coding_tools()}
-    active_names = {t.name for t in TOOLS}
-    assert tau_names & active_names == set()
+def test_active_tools_are_the_tau_tools_rooted_in_the_workspace() -> None:
+    from app.tools import WORKSPACE_DIR
+
+    assert [t.name for t in TOOLS] == [t.name for t in create_coding_tools()]
+    assert WORKSPACE_DIR.is_dir()
+    assert WORKSPACE_DIR != Path(__file__).resolve().parent.parent  # never the repo root
 
 
 @pytest.mark.asyncio
@@ -154,12 +155,12 @@ async def test_bash_timeout_is_not_treated_as_an_error(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_bash_respects_cancellation_signal() -> None:
+async def test_bash_respects_cancellation_signal(tmp_path: Path) -> None:
     class _Cancelled:
         def is_cancelled(self) -> bool:
             return True
 
-    bash = create_bash_tool()
+    bash = create_bash_tool(cwd=tmp_path)
     result = await bash.execute("c1", {"command": "echo should-not-run", "description": "x"}, signal=_Cancelled())
     assert result.is_error is True
     assert "cancelled" in result.text.lower()

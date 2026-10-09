@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import tempfile
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -14,10 +15,13 @@ import app.settings  # noqa: F401 — import triggers the repo-root .env load;
 # Must be set before app.settings is imported in each test process.
 os.environ["HUMPHREY_MOCK"] = "1"
 os.environ["STORAGE_BACKEND"] = "memory"
+# The tools act on files and run commands; keep that inside a throwaway dir.
+os.environ["HUMPHREY_WORKSPACE"] = tempfile.mkdtemp(prefix="humphrey-test-workspace-")
 os.environ.pop("AZURE_STORAGE_ACCOUNT_URL", None)
 os.environ.pop("AZURE_OPENAI_ENDPOINT", None)
 os.environ.pop("AZURE_OPENAI_DEPLOYMENT", None)
 os.environ.pop("OPENAI_API_KEY", None)
+os.environ.pop("OPENAI_MODELS", None)
 
 
 @pytest.fixture(autouse=True)

@@ -1,6 +1,6 @@
 """Responses API support.
 
-Reasoning models (gpt-5.4/5.5/5.6 and later) reject function tools on
+Reasoning models (gpt-5.4 and later, gpt-6.x, the o-series) reject function tools on
 /v1/chat/completions unless reasoning_effort is "none" — confirmed identical
 on OpenAI-direct and Azure OpenAI. The only way to combine reasoning with
 tools is the Responses API. This module holds everything both providers
@@ -50,10 +50,13 @@ def _user_content_to_responses(content: str | list) -> Any:
     )
     return parts
 
-# Tau's own list ("gpt-5.4", "gpt-5.5") predates gpt-5.6 and is already
-# stale — this is deliberately an explicit set we maintain, not a prefix
-# guess, so the exact model we're targeting is never silently missed.
-_RESPONSES_ONLY_MODELS: frozenset[str] = frozenset({"gpt-5.4", "gpt-5.5", "gpt-5.6"})
+# Deliberately an explicit set of families we maintain, not a version guess:
+# non-reasoning chat variants (e.g. gpt-5.3-chat-latest) must stay on Chat
+# Completions, since the Responses path requests reasoning. Each entry also
+# matches its suffixed variants (gpt-6-sol, gpt-5.4-mini, o4-mini, ...).
+_RESPONSES_ONLY_MODELS: frozenset[str] = frozenset(
+    {"gpt-5.4", "gpt-5.5", "gpt-5.6", "gpt-6", "gpt-6.1", "o1", "o3", "o4"}
+)
 
 
 def uses_responses_api(model: str) -> bool:
@@ -77,7 +80,7 @@ def build_responses_payload(
         # no need for (and no risk from) server-side retention.
         "store": False,
         "instructions": system,
-        "input": messages_to_responses_input(messages),
+        "input": messages_to_responses_input(messages, model=model),
     }
     if reasoning_effort:
         # summary: "auto" streams response.reasoning_summary_text.delta
@@ -105,13 +108,18 @@ def _tool_to_responses(tool: AgentTool) -> dict[str, Any]:
 _REASONING_REPLAY_KEYS = frozenset({"id", "summary", "type", "content", "encrypted_content"})
 
 
-def messages_to_responses_input(messages: list[AgentMessage]) -> list[dict[str, Any]]:
+def messages_to_responses_input(
+    messages: list[AgentMessage], *, model: str | None = None
+) -> list[dict[str, Any]]:
     """Map the portable transcript to Responses API ``input`` items.
 
     Replays each assistant turn's reasoning item (from
     ``ThinkingContent.thinking_signature``) ahead of its text/tool calls —
     required so a reasoning model continues its line of reasoning instead of
-    starting over on every turn (Azure/OpenAI's own guidance).
+    starting over on every turn (Azure/OpenAI's own guidance). When ``model``
+    is given, reasoning produced by a different model is not replayed: the
+    user can switch models mid-conversation, and encrypted reasoning only
+    makes sense to the model that wrote it.
     """
     items: list[dict[str, Any]] = []
     for message in messages:
@@ -119,7 +127,8 @@ def messages_to_responses_input(messages: list[AgentMessage]) -> list[dict[str, 
             items.append({"role": "user", "content": _user_content_to_responses(message.content)})
         elif isinstance(message, AssistantMessage):
             signature = message.thinking_signature
-            if signature:
+            same_model = model is None or message.model in ("unknown", model)
+            if signature and same_model:
                 try:
                     reasoning_item = json.loads(signature)
                 except (TypeError, ValueError):

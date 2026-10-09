@@ -30,6 +30,14 @@ from brain.events import (
 from brain.messages import AssistantMessage, ToolResultMessage, UserMessage
 
 
+
+def encode_sse(payload: dict[str, Any]) -> str:
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+MAX_DIFF_CHARS = 20_000
+
+
 class SseRenderer:
     """Stateful projector for one run's event stream (turn count, tool labels)."""
 
@@ -50,7 +58,7 @@ class SseRenderer:
         payload = self.render(event)
         if payload is None:
             return None
-        return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+        return encode_sse(payload)
 
     def _flatten(self, event: AgentEvent) -> dict[str, Any] | None:
         if isinstance(event, AgentStartEvent):
@@ -83,7 +91,7 @@ class SseRenderer:
         if isinstance(event, ToolExecutionUpdateEvent):
             return None  # nothing streams partial tool results today
         if isinstance(event, ToolExecutionEndEvent):
-            return {
+            payload: dict[str, Any] = {
                 "type": "tool_end",
                 "tool": event.tool_name,
                 "label": self._labels.pop(event.tool_call_id, event.tool_name),
@@ -91,6 +99,16 @@ class SseRenderer:
                 "result": event.result.text,
                 "is_error": event.is_error,
             }
+            # The UI shows edits as a diff and bash runs by exit code; both
+            # live in the tool's details rather than its model-facing text.
+            details = event.result.details
+            if isinstance(details, dict):
+                patch = details.get("patch")
+                if isinstance(patch, str) and patch:
+                    payload["diff"] = patch[:MAX_DIFF_CHARS]
+                if "exit_code" in details:
+                    payload["exit_code"] = details["exit_code"]
+            return payload
         return None
 
     def _message_start(self, event: MessageStartEvent) -> dict[str, Any] | None:

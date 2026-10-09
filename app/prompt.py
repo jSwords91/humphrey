@@ -3,7 +3,7 @@
 Each tool describes its own prompt line and any usage guidelines
 (``AgentTool.prompt_line`` / ``prompt_guidelines``); this module only
 collects and formats them. That split is what stops a tool from silently
-going unmentioned in the prompt the way ``read_skill`` once did when the
+going unmentioned in the prompt the way one once did when the
 tool list here was a hand-maintained paragraph.
 """
 
@@ -20,8 +20,10 @@ PREAMBLE = (
 )
 
 GENERAL_GUIDELINES: tuple[str, ...] = (
-    "Never claim you can run shell commands, edit files, or change external systems.",
     "After tools return, give a short useful answer. Quote names and sources when relevant.",
+    "Files you create or change in the working directory are shown to the user inline as "
+    "artefacts. For reports, charts, or anything visual, write a file (Markdown, HTML, CSV, "
+    "an image) rather than pasting long content into chat.",
 )
 
 

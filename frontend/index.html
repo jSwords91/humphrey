@@ -3,17 +3,34 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#f7f7f8" />
-    <meta name="color-scheme" content="light" />
+    <meta name="theme-color" content="#161826" />
+    <meta name="color-scheme" content="dark light" />
+    <script>
+      // Before first paint: the saved theme, else the OS preference.
+      (() => {
+        let theme = null;
+        try {
+          theme = localStorage.getItem("humphrey.theme");
+        } catch {}
+        if (theme !== "light" && theme !== "dark") {
+          theme = matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+        }
+        document.documentElement.dataset.theme = theme;
+        document
+          .querySelector('meta[name="theme-color"]')
+          .setAttribute("content", theme === "light" ? "#f6f4f0" : "#161826");
+      })();
+    </script>
     <title>Humphrey</title>
     <style>
-      html {
-        color-scheme: light;
-        background: #f7f7f8;
-      }
+      html,
       body {
         margin: 0;
-        background: #f7f7f8;
+        background: #161826;
+      }
+      html[data-theme="light"],
+      html[data-theme="light"] body {
+        background: #f6f4f0;
       }
       .skip-link {
         position: absolute;
@@ -32,8 +49,9 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
       rel="stylesheet"
-      href="https://fonts.googleapis.com/css2?family=Geist:wght@100..900&family=Geist+Mono:wght@100..900&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500&display=swap"
     />
+    <link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/regular/style.css" />
     <link rel="stylesheet" href="/theme.css?v=__APP_VERSION__" />
     <link rel="stylesheet" href="/app.css?v=__APP_VERSION__" />
   </head>
@@ -54,23 +72,35 @@
       <header class="header">
         <div class="header-left">
           <a class="mark" href="/" aria-label="Humphrey home">
-            Humphrey<span class="mark-dot">.</span>
+            <span class="hb-mark" aria-hidden="true"></span>
+            Humphrey
           </a>
-          <div
-            class="model-chip"
-            id="model-chip"
-            role="status"
-            aria-label="Model"
-            title=""
-          >
-            <span class="model-chip-label" id="model-chip-label">—</span>
-          </div>
         </div>
         <div class="header-right">
           <div class="status-pill" id="status-pill" aria-live="polite">
             <span class="status-dot" aria-hidden="true"></span>
             <span class="status-label" id="status-label">Connecting</span>
           </div>
+          <button
+            type="button"
+            class="header-icon-btn details-btn"
+            id="details-btn"
+            aria-expanded="false"
+            aria-controls="stats-panel"
+            aria-label="Details and model"
+            title="Details and model"
+          >
+            <i class="ph ph-sliders-horizontal" aria-hidden="true"></i>
+          </button>
+          <button
+            type="button"
+            class="header-icon-btn"
+            id="theme-toggle"
+            aria-label="Switch to light theme"
+            title="Switch to light theme"
+          >
+            <i class="ph ph-sun" aria-hidden="true"></i>
+          </button>
         </div>
       </header>
 
@@ -85,7 +115,7 @@
               aria-controls="sessions-panel"
               title="Sessions"
             >
-              <span class="icon-hamburger" aria-hidden="true"></span>
+              <i class="ph ph-list" aria-hidden="true"></i>
               <span class="visually-hidden">Open sessions</span>
             </button>
             <button
@@ -94,7 +124,7 @@
               id="new-chat-collapsed"
               title="New chat"
             >
-              <span aria-hidden="true">+</span>
+              <i class="ph ph-plus" aria-hidden="true"></i>
               <span class="visually-hidden">New chat</span>
             </button>
             <span class="rail-count" id="sessions-count" hidden>0</span>
@@ -108,11 +138,13 @@
                 id="sessions-collapse"
                 aria-label="Collapse sessions"
               >
-                <span class="icon-chevron" aria-hidden="true"></span>
+                <i class="ph ph-caret-left" aria-hidden="true"></i>
               </button>
             </div>
             <p class="rail-section-label">Recents</p>
             <ul class="session-list" id="session-list"></ul>
+            <p class="rail-section-label">Files</p>
+            <ul class="session-list files-list" id="files-list"></ul>
           </div>
         </aside>
 
@@ -120,7 +152,8 @@
           <div class="thread" id="thread">
             <section class="empty-state" id="hero" aria-labelledby="hero-title">
               <h1 class="empty-title" id="hero-title">
-                Humphrey<span class="mark-dot">.</span>
+                <span class="hb-mark" aria-hidden="true"></span>
+                Humphrey
               </h1>
               <p class="empty-lede">How can I help?</p>
             </section>
@@ -181,16 +214,7 @@
                       aria-label="Attach image"
                       title="Attach image"
                     >
-                      <svg viewBox="0 0 24 24" aria-hidden="true">
-                        <path
-                          d="M21.44 11.05l-9.19 9.19a5 5 0 01-7.07-7.07l9.19-9.19a3.5 3.5 0 014.95 4.95l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"
-                          fill="none"
-                          stroke="currentColor"
-                          stroke-width="2"
-                          stroke-linecap="round"
-                          stroke-linejoin="round"
-                        />
-                      </svg>
+                      <i class="ph ph-paperclip" aria-hidden="true"></i>
                     </button>
                     <button type="button" class="btn-ghost" id="follow-up-btn" hidden>
                       Follow-up
@@ -203,16 +227,7 @@
                       disabled
                       aria-label="Send message"
                     >
-                      <svg class="icon-send" viewBox="0 0 24 24" aria-hidden="true">
-                        <path
-                          d="M12 19V5M5 12l7-7 7 7"
-                          fill="none"
-                          stroke="currentColor"
-                          stroke-width="2.2"
-                          stroke-linecap="round"
-                          stroke-linejoin="round"
-                        />
-                      </svg>
+                      <i class="ph ph-arrow-up" aria-hidden="true"></i>
                       <span class="visually-hidden" id="primary-label">Send</span>
                     </button>
                   </div>
@@ -258,13 +273,21 @@
                 id="stats-collapse"
                 aria-label="Collapse details"
               >
-                <span class="icon-chevron icon-chevron-right" aria-hidden="true"></span>
+                <i class="ph ph-caret-right" aria-hidden="true"></i>
               </button>
             </div>
             <dl class="stats-list" id="stats-list">
-              <div class="stats-row">
-                <dt>Model</dt>
-                <dd id="stat-model">—</dd>
+              <div class="stats-row stats-row-model">
+                <dt><label for="model-select">Model</label></dt>
+                <dd>
+                  <span class="select-field">
+                    <select id="model-select" class="model-select" disabled>
+                      <option>—</option>
+                    </select>
+                    <i class="ph ph-caret-down" aria-hidden="true"></i>
+                  </span>
+                  <span class="stats-hint" id="model-hint" hidden></span>
+                </dd>
               </div>
               <div class="stats-row">
                 <dt>Provider</dt>
@@ -306,6 +329,7 @@
       </div>
     </div>
 
+    <dialog class="artifact-viewer" id="artifact-viewer" aria-label="Artefact"></dialog>
     <div class="toast" id="toast" hidden role="status"></div>
     <div class="visually-hidden" id="sr-announce" aria-live="polite" aria-atomic="true"></div>
 

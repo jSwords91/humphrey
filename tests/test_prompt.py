@@ -7,7 +7,7 @@ from app.tools import TOOLS
 
 
 def test_every_tool_appears_in_the_assembled_prompt() -> None:
-    """Regression guard: read_skill once shipped with no mention in the prompt at all."""
+    """Regression guard: a tool once shipped with no mention in the prompt at all."""
     listing = format_available_tools(TOOLS)
     for tool in TOOLS:
         assert tool.name in listing
@@ -52,8 +52,8 @@ def test_collect_tool_guidelines_deduplicates() -> None:
 
 def test_build_system_prompt_includes_general_guidelines_and_skills_placeholder() -> None:
     prompt = build_system_prompt(TOOLS)
-    assert "Never claim you can run shell" in prompt
-    assert "status" in prompt
+    assert "After tools return" in prompt
+    assert "bash" in prompt
 
 
 def test_mermaid_guidance_moved_out_of_the_base_prompt() -> None:

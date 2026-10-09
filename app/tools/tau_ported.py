@@ -1,37 +1,19 @@
 """Filesystem and shell tools, ported from tau_coding.tools.
 
-DELIBERATELY NOT WIRED IN. These are not part of ``app.tools.TOOLS`` and
-nothing imports this module today. Humphrey's stated design excludes shell
-access and filesystem writes on purpose (see knowledge/humphrey.md,
-"Intentionally not included") — this module exists so that decision can be
-revisited deliberately later, with working code to evaluate, rather than
-re-implemented from scratch under time pressure. Wiring any of these into
-``TOOLS`` is a decision for whoever enables them, not made by porting them.
+These are Humphrey's tools (see ``app.tools.TOOLS``): tau's actual four
+coding tools - read, write, edit, bash - which is the whole of tau_coding's
+built-in tool set. Adapted to Humphrey's simpler ``AgentTool``/``ToolResult``
+shapes (see brain/tools.py) rather than tau's richer ``ToolDefinition``
+wrapper, and with tau's image-reading support in ``read`` dropped.
 
-Ported from tau's actual four coding tools — read, write, edit, bash — which
-is the whole of tau_coding's built-in tool set (confirmed by inspection: no
-separate glob/grep/task tools exist there). Adapted to Humphrey's simpler
-``AgentTool``/``ToolResult`` shapes (see brain/tools.py) rather than tau's
-richer ``ToolDefinition`` wrapper, and with tau's image-reading support in
-``read`` dropped entirely. Note this predates Humphrey's own chat-upload
-image feature (brain/messages.py's ``ImageContent``, added later for the
-web UI) — wiring image support into this ported ``read`` tool would now be
-a smaller lift than "from scratch", since the content type it would attach
-to already exists.
-
-Before ever adding any of these to TOOLS, at minimum decide and review:
-  - What ``cwd`` should scope them to. The factories default to
-    ``Path.cwd()`` at call time (tau's own default) — inside the container
-    that's wherever uvicorn was launched from (see Dockerfile: /app), which
-    is NOT obviously the right scope for a multi-tenant or knowledge-only
-    deployment. Nothing here picks a safer default on Humphrey's behalf.
-  - Whether `write`/`edit`/`bash` are safe at all given the container's
-    filesystem is ephemeral, shared across a single running replica, and
-    (per settings.py) reads its own source under /app — a write/edit tool
-    can modify the running app's own code path.
-  - `bash` is unrestricted shell execution with no allowlist. This is the
-    single biggest departure from Humphrey's "platform-safe tools only"
-    posture and warrants its own explicit sign-off, separate from read/edit.
+Scope and safety, as wired:
+  - ``app.tools`` roots them in the workspace directory (HUMPHREY_WORKSPACE,
+    default ./workspace), not the repo root, so the agent cannot rewrite the
+    app it is running in. Relative paths resolve there; absolute paths are
+    not blocked (skills are read by absolute path).
+  - ``bash`` is unrestricted shell execution with no allowlist. Run Humphrey
+    somewhere you are happy for the model to run commands (Docker, a VM), and
+    keep the port bound to localhost (see docker-compose.yml).
 """
 
 from __future__ import annotations
@@ -883,7 +865,7 @@ def create_bash_tool(
 
     return AgentTool(
         name="bash",
-        label="Running {description}",
+        label="{description}",
         description=(
             "Execute a bash command. Returns combined stdout/stderr. Output is truncated to "
             f"last {DEFAULT_MAX_OUTPUT_LINES} lines or {DEFAULT_MAX_OUTPUT_BYTES // 1024}KB "
@@ -913,10 +895,7 @@ def create_bash_tool(
 def create_coding_tools(
     *, cwd: str | Path | None = None, shell_command_prefix: str | None = None
 ) -> list[AgentTool]:
-    """The full ported set, in tau's own order: read, write, edit, bash.
-
-    Not wired into anything — see the module docstring.
-    """
+    """The full ported set, in tau's own order: read, write, edit, bash."""
     root = Path.cwd() if cwd is None else Path(cwd)
     return [
         create_read_tool(cwd=root),

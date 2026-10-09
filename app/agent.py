@@ -14,7 +14,7 @@ from datetime import date
 
 from app.prompt import build_system_prompt
 from app.skills import format_skills_for_prompt
-from app.tools import TOOLS
+from app.tools import TOOLS, WORKSPACE_DIR
 from brain.harness import AfterToolCall, AgentHarness, AgentHarnessConfig, BeforeToolCall
 from brain.messages import AgentMessage
 from brain.provider import ModelProvider
@@ -32,7 +32,11 @@ def system_prompt() -> str:
     Public - app/main.py also needs this ahead of build_harness() to
     estimate context size for auto-compaction, before a harness exists.
     """
-    return f"{STATIC_SYSTEM_PROMPT}\n\nCurrent date: {date.today().isoformat()}"
+    return (
+        f"{STATIC_SYSTEM_PROMPT}\n\n"
+        f"Current date: {date.today().isoformat()}\n"
+        f"Working directory: {WORKSPACE_DIR}"
+    )
 
 
 def build_harness(

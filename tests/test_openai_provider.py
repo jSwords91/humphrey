@@ -16,6 +16,7 @@ import pytest
 def _clean_provider_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """conftest already scrubs these; re-assert per test since some cases set them."""
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_MODELS", raising=False)
     monkeypatch.delenv("AZURE_OPENAI_ENDPOINT", raising=False)
     monkeypatch.delenv("AZURE_OPENAI_DEPLOYMENT", raising=False)
 
@@ -404,3 +405,59 @@ async def test_azure_v1_client_sends_a_real_bearer_token_not_a_stringified_calla
     await client.models.list()
 
     assert captured["authorization"] == "Bearer REAL-AAD-TOKEN"
+
+
+def _configure_openai(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HUMPHREY_MOCK", "0")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-123")
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-a")
+    monkeypatch.setenv("OPENAI_MODELS", "gpt-b, gpt-a ,, gpt-c")
+    _reset_settings()
+
+
+def test_selectable_models_put_the_default_first_without_duplicates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.settings import get_settings
+
+    _configure_openai(monkeypatch)
+    assert get_settings().selectable_models == ("gpt-a", "gpt-b", "gpt-c")
+
+
+def test_get_provider_uses_the_requested_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    from providers import get_provider
+
+    _configure_openai(monkeypatch)
+    assert get_provider().deployment_name == "gpt-a"
+    assert get_provider("gpt-c").deployment_name == "gpt-c"
+
+
+async def test_models_endpoint_lists_openai_models(monkeypatch: pytest.MonkeyPatch) -> None:
+    from httpx import ASGITransport, AsyncClient
+
+    from app.main import app
+
+    _configure_openai(monkeypatch)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        body = (await client.get("/api/models")).json()
+        rejected = await client.post(
+            "/api/agent",
+            json={"model": "gpt-z", "messages": [{"role": "user", "content": "hi"}]},
+        )
+    assert body == {
+        "provider": "openai",
+        "selectable": True,
+        "default": "gpt-a",
+        "models": ["gpt-a", "gpt-b", "gpt-c"],
+    }
+    assert rejected.status_code == 422
+
+
+async def test_models_endpoint_reports_mock_as_fixed() -> None:
+    from httpx import ASGITransport, AsyncClient
+
+    from app.main import app
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        body = (await client.get("/api/models")).json()
+    assert body == {"provider": "mock", "selectable": False, "default": "mock", "models": ["mock"]}
