@@ -1,0 +1,126 @@
+/* Humphrey theme tokens. Fonts are loaded from index.html so @import cannot
+   block first paint. */
+
+:root {
+  /* Palette */
+  --hb-ink: #16191d;
+  --hb-accent: #0f766e;
+  --hb-accent-deep: #115e59;
+  --hb-info: #1d5fbf;
+  --hb-success: #3d8b5a;
+  --hb-warning: #b45309;
+  --hb-reasoning: #6b4f8a;
+
+  /* Semantic surfaces (quiet light) */
+  --color-page: #f7f7f8;
+  --color-elevated: #ffffff;
+  --color-user-bubble: #ececec;
+  --color-tool-bg: #f3f3f5;
+  --color-fg: #1a1a1a;
+  --color-fg-inverse: #fafafa;
+  --color-muted: #737373;
+  --color-muted-soft: #8a8a8a;
+  --color-border: rgba(0, 0, 0, 0.08);
+  --color-border-strong: rgba(0, 0, 0, 0.14);
+  --color-accent: var(--hb-accent);
+  --color-accent-hover: var(--hb-accent-deep);
+  --color-accent-dim: color-mix(in srgb, var(--hb-accent) 10%, transparent);
+  --color-shadow: rgba(0, 0, 0, 0.06);
+  --color-shadow-strong: rgba(0, 0, 0, 0.1);
+  --color-focus: var(--hb-accent);
+  --color-code-island: #1e1e22;
+
+  /* Aliases used by app.css */
+  --color-bg: var(--color-page);
+  --color-bg-soft: var(--color-tool-bg);
+  --color-bg-inverse: var(--hb-ink);
+  --color-fg-inverse: var(--color-fg-inverse);
+
+  /* Type */
+  --font-sans: "Geist", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, "SF Mono", "Cascadia Code", "Segoe UI Mono",
+    monospace;
+
+  --fs-xs: 0.75rem;
+  --fs-sm: 0.875rem;
+  --fs-base: 0.9375rem; /* 15px */
+  --fs-md: 1.0625rem;
+  --fs-lg: 1.25rem;
+  --fs-xl: 1.5rem;
+  --fs-2xl: 2rem;
+
+  --lh-tight: 1.15;
+  --lh-snug: 1.35;
+  --lh-base: 1.55;
+  --lh-relaxed: 1.65;
+
+  --tracking-tight: -0.04em;
+  --tracking-normal: 0;
+  --tracking-wide: 0.06em;
+
+  --fw-regular: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+  --fw-brand: 650;
+  --fw-bold: 700;
+
+  /* Space: 4 / 8 / 12 / 16 / 24 / 32 / 48 */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+  --space-7: 3rem;
+
+  /* Radii: 8 / 14 / 22 / pill */
+  --radius-sm: 8px;
+  --radius: 14px;
+  --radius-lg: 22px;
+  --radius-pill: 999px;
+
+  --shadow-sm: 0 1px 2px var(--color-shadow);
+  --shadow-md: 0 8px 28px var(--color-shadow-strong);
+  --shadow-soft: 0 4px 16px var(--color-shadow);
+
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --duration: 160ms;
+  --duration-panel: 180ms;
+  --duration-msg: 200ms;
+
+  /* Layout */
+  --header-h: 56px;
+  --rail-sessions-collapsed: 52px;
+  --rail-sessions-open: 248px;
+  --rail-stats-collapsed: 56px;
+  --rail-stats-open: 260px;
+  --transcript-max: 48rem;
+  --user-bubble-max: 32rem;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  scroll-behavior: smooth;
+  -webkit-text-size-adjust: 100%;
+  color-scheme: light;
+  background-color: var(--color-page);
+}
+
+body {
+  font-family: var(--font-sans);
+  font-size: var(--fs-base);
+  font-weight: var(--fw-regular);
+  line-height: var(--lh-base);
+  color: var(--color-fg);
+  background-color: var(--color-page);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}

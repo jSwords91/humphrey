@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#f7f7f8" />
+    <meta name="color-scheme" content="light" />
+    <title>Humphrey</title>
+    <style>
+      html {
+        color-scheme: light;
+        background: #f7f7f8;
+      }
+      body {
+        margin: 0;
+        background: #f7f7f8;
+      }
+      .skip-link {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+      }
+    </style>
+    <link rel="icon" href="/favicon.svg?v=__APP_VERSION__" type="image/svg+xml" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Geist:wght@100..900&family=Geist+Mono:wght@100..900&display=swap"
+    />
+    <link rel="stylesheet" href="/theme.css?v=__APP_VERSION__" />
+    <link rel="stylesheet" href="/app.css?v=__APP_VERSION__" />
+  </head>
+  <body>
+    <a class="skip-link" href="#question">Skip to message</a>
+
+    <div
+      class="shell"
+      id="stage"
+      data-state="empty"
+      data-running="0"
+      data-sessions-open="0"
+      data-stats-open="0"
+      data-status="connecting"
+      data-pinned="1"
+      data-context="ok"
+    >
+      <header class="header">
+        <div class="header-left">
+          <a class="mark" href="/" aria-label="Humphrey home">
+            Humphrey<span class="mark-dot">.</span>
+          </a>
+          <div
+            class="model-chip"
+            id="model-chip"
+            role="status"
+            aria-label="Model"
+            title=""
+          >
+            <span class="model-chip-label" id="model-chip-label">—</span>
+          </div>
+        </div>
+        <div class="header-right">
+          <div class="status-pill" id="status-pill" aria-live="polite">
+            <span class="status-dot" aria-hidden="true"></span>
+            <span class="status-label" id="status-label">Connecting</span>
+          </div>
+        </div>
+      </header>
+
+      <div class="shell-body">
+        <aside class="rail rail-sessions" id="sessions-rail" aria-label="Sessions">
+          <div class="rail-collapsed">
+            <button
+              type="button"
+              class="rail-icon-btn"
+              id="sessions-toggle"
+              aria-expanded="false"
+              aria-controls="sessions-panel"
+              title="Sessions"
+            >
+              <span class="icon-hamburger" aria-hidden="true"></span>
+              <span class="visually-hidden">Open sessions</span>
+            </button>
+            <button
+              type="button"
+              class="rail-icon-btn rail-icon-accent"
+              id="new-chat-collapsed"
+              title="New chat"
+            >
+              <span aria-hidden="true">+</span>
+              <span class="visually-hidden">New chat</span>
+            </button>
+            <span class="rail-count" id="sessions-count" hidden>0</span>
+          </div>
+          <div class="rail-panel" id="sessions-panel">
+            <div class="rail-panel-head">
+              <button type="button" class="btn-primary btn-block" id="new-chat">New chat</button>
+              <button
+                type="button"
+                class="rail-icon-btn"
+                id="sessions-collapse"
+                aria-label="Collapse sessions"
+              >
+                <span class="icon-chevron" aria-hidden="true"></span>
+              </button>
+            </div>
+            <p class="rail-section-label">Recents</p>
+            <ul class="session-list" id="session-list"></ul>
+          </div>
+        </aside>
+
+        <main class="main">
+          <div class="thread" id="thread">
+            <section class="empty-state" id="hero" aria-labelledby="hero-title">
+              <h1 class="empty-title" id="hero-title">
+                Humphrey<span class="mark-dot">.</span>
+              </h1>
+              <p class="empty-lede">How can I help?</p>
+            </section>
+
+            <div class="transcript" id="transcript"></div>
+          </div>
+
+          <div class="composer-zone">
+            <div class="activity-dock" id="activity-dock" hidden>
+              <div class="activity-head">
+                <span class="status-dot is-live" aria-hidden="true"></span>
+                <span class="activity-title" id="activity-title">0 tools running</span>
+              </div>
+              <ul class="activity-list" id="activity-list"></ul>
+            </div>
+
+            <div class="queue" id="queue" role="list" aria-label="Queued messages"></div>
+
+            <form class="composer" id="composer">
+              <div class="latest-slot">
+                <button
+                  type="button"
+                  class="latest-btn"
+                  id="latest-btn"
+                  hidden
+                  aria-label="Latest messages"
+                >
+                  <span class="latest-btn-label">Latest</span>
+                  <span class="latest-btn-dot" id="latest-btn-dot" hidden aria-hidden="true"></span>
+                </button>
+              </div>
+              <div class="composer-shell">
+                <label class="visually-hidden" for="question">Message</label>
+                <div class="composer-attachments" id="composer-attachments" hidden></div>
+                <textarea
+                  id="question"
+                  name="question"
+                  rows="1"
+                  placeholder="Message Humphrey…"
+                  autocomplete="off"
+                ></textarea>
+                <div class="composer-bar">
+                  <p class="composer-hint" id="composer-hint">
+                    <kbd>Enter</kbd> send · <kbd>Shift</kbd>+<kbd>Enter</kbd> newline
+                  </p>
+                  <div class="composer-actions">
+                    <input
+                      type="file"
+                      id="attach-input"
+                      accept="image/png,image/jpeg,image/gif,image/webp,image/bmp"
+                      multiple
+                      hidden
+                    />
+                    <button
+                      type="button"
+                      class="btn-ghost btn-icon"
+                      id="attach-btn"
+                      aria-label="Attach image"
+                      title="Attach image"
+                    >
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path
+                          d="M21.44 11.05l-9.19 9.19a5 5 0 01-7.07-7.07l9.19-9.19a3.5 3.5 0 014.95 4.95l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                        />
+                      </svg>
+                    </button>
+                    <button type="button" class="btn-ghost" id="follow-up-btn" hidden>
+                      Follow-up
+                    </button>
+                    <button type="button" class="btn-ghost" id="stop-btn" hidden>Stop</button>
+                    <button
+                      type="submit"
+                      class="btn-send"
+                      id="primary-action"
+                      disabled
+                      aria-label="Send message"
+                    >
+                      <svg class="icon-send" viewBox="0 0 24 24" aria-hidden="true">
+                        <path
+                          d="M12 19V5M5 12l7-7 7 7"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2.2"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                        />
+                      </svg>
+                      <span class="visually-hidden" id="primary-label">Send</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </form>
+          </div>
+        </main>
+
+        <aside class="rail rail-stats" id="stats-rail" aria-label="Details">
+          <div class="rail-collapsed rail-collapsed-stats">
+            <button
+              type="button"
+              class="stats-ring-btn"
+              id="stats-toggle"
+              aria-expanded="false"
+              aria-controls="stats-panel"
+              title="Details"
+            >
+              <span class="stats-ring-wrap">
+                <svg class="stats-ring" viewBox="0 0 36 36" aria-hidden="true">
+                  <circle class="stats-ring-track" cx="18" cy="18" r="14" />
+                  <circle
+                    class="stats-ring-fill"
+                    id="stats-ring-fill"
+                    cx="18"
+                    cy="18"
+                    r="14"
+                    stroke-dasharray="0 88"
+                  />
+                </svg>
+                <span class="stats-ring-pct" id="stats-ring-pct">0</span>
+              </span>
+              <span class="stats-vertical-label">Details</span>
+            </button>
+          </div>
+          <div class="rail-panel" id="stats-panel">
+            <div class="rail-panel-head">
+              <p class="rail-section-label">Details</p>
+              <button
+                type="button"
+                class="rail-icon-btn"
+                id="stats-collapse"
+                aria-label="Collapse details"
+              >
+                <span class="icon-chevron icon-chevron-right" aria-hidden="true"></span>
+              </button>
+            </div>
+            <dl class="stats-list" id="stats-list">
+              <div class="stats-row">
+                <dt>Model</dt>
+                <dd id="stat-model">—</dd>
+              </div>
+              <div class="stats-row">
+                <dt>Provider</dt>
+                <dd id="stat-provider">—</dd>
+              </div>
+              <div class="stats-row">
+                <dt>Status</dt>
+                <dd id="stat-status">Ready</dd>
+              </div>
+              <div class="stats-row">
+                <dt>Active</dt>
+                <dd id="stat-tool">—</dd>
+              </div>
+              <div class="stats-row stats-row-bar">
+                <dt>Context</dt>
+                <dd>
+                  <div class="context-bar" aria-hidden="true">
+                    <span class="context-bar-fill" id="context-bar-fill"></span>
+                  </div>
+                  <span class="mono" id="stat-context">0%</span>
+                </dd>
+              </div>
+              <div class="stats-row">
+                <dt>Turns</dt>
+                <dd class="mono" id="stat-turns">0</dd>
+              </div>
+              <div class="stats-row">
+                <dt>Tools</dt>
+                <dd class="mono" id="stat-tools">0</dd>
+              </div>
+              <div class="stats-row">
+                <dt>In / Out</dt>
+                <dd class="mono" id="stat-io">0 / 0</dd>
+              </div>
+            </dl>
+          </div>
+        </aside>
+        <button type="button" class="scrim" id="scrim" hidden aria-label="Close panel"></button>
+      </div>
+    </div>
+
+    <div class="toast" id="toast" hidden role="status"></div>
+    <div class="visually-hidden" id="sr-announce" aria-live="polite" aria-atomic="true"></div>
+
+    <script src="/markdown.js?v=__APP_VERSION__"></script>
+    <script src="/app.js?v=__APP_VERSION__"></script>
+  </body>
+</html>

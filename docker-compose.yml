@@ -1,0 +1,28 @@
+# Humphrey (SSE). Mock mode needs no credentials.
+#   docker compose up --build
+# Open http://localhost:8001 (8000 is the container's internal port).
+#
+# Set OPENAI_API_KEY (or HUMPHREY_MOCK=1) in .env; see .env.example.
+#
+# Sessions are JSON files under ./data, bind-mounted below so they survive
+# restarts.
+services:
+  humphrey:
+    build: .
+    ports:
+      - "8001:8000"
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - ./frontend:/app/frontend:ro
+      - ./app:/app/app:ro
+      - ./brain:/app/brain:ro
+      - ./providers:/app/providers:ro
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz')"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
