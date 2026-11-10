@@ -4,10 +4,7 @@ A streaming, tool-calling agent with skills: FastAPI + SSE on the back end, a
 plain HTML/JS chat UI on the front. The core agent (messages, loop, harness,
 events) is provider-agnostic and knows nothing about the app around it.
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/dashboard-dark.png">
-  <img alt="Humphrey turning a CSV into an inline sales dashboard: reasoning, three tool calls, a live Chart.js artefact, and a summary table" src="docs/screenshots/dashboard-light.png">
-</picture>
+<img alt="Humphrey turning a CSV into an inline sales dashboard: reasoning, three tool calls, a live Chart.js artefact, and a summary table" src="docs/screenshots/dashboard-light.png">
 
 <sub>From a CSV to a live dashboard in one turn: Humphrey inspects the file with
 `bash`, loads the `html-artifacts` skill, writes the page, and the UI renders
@@ -154,3 +151,7 @@ Azure OpenAI is used only when `OPENAI_API_KEY` is unset and
 `AZURE_OPENAI_ENDPOINT` / `AZURE_OPENAI_DEPLOYMENT` are set. It authenticates
 with `DefaultAzureCredential`. See `.env.example` for all settings. For
 Docker, add `--group azure` to the `uv sync` line in the `Dockerfile`.
+
+---
+
+<sub>p.s. my cat is called Humphrey. The cat did not help with the code.</sub>
