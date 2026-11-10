@@ -4,6 +4,12 @@ A streaming, tool-calling agent with skills: FastAPI + SSE on the back end, a
 plain HTML/JS chat UI on the front. The core agent (messages, loop, harness,
 events) is provider-agnostic and knows nothing about the app around it.
 
+<img alt="Humphrey turning a CSV into an inline sales dashboard: reasoning, three tool calls, a live Chart.js artefact, and a summary table" src="docs/screenshots/dashboard-light.png">
+
+<sub>From a CSV to a live dashboard in one turn: Humphrey inspects the file with
+`bash`, loads the `html-artifacts` skill, writes the page, and the UI renders
+it inline as an artefact.</sub>
+
 ## Features
 
 - Streamed replies, tool calls, and reasoning summaries (for reasoning models)
@@ -15,6 +21,24 @@ events) is provider-agnostic and knows nothing about the app around it.
 - Persistent, auto-named sessions with automatic context compaction
 - Runs on OpenAI, with an offline mock that needs no credentials and an
   optional Azure OpenAI adapter
+
+## Screenshots
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <img alt="An edit tool call expanded to show its arguments and a coloured diff, followed by a test run and a summary" src="docs/screenshots/code-edit.png"><br>
+      <sub><b>Edits as diffs.</b> Each tool call is a collapsible card; <code>edit</code> shows its arguments, a coloured diff and the result, then <code>bash</code> verifies the fix.</sub>
+    </td>
+    <td width="50%" valign="top">
+      <img alt="A rendered Mermaid flowchart of Humphrey's architecture inside an assistant reply" src="docs/screenshots/diagram.png"><br>
+      <sub><b>Rendered diagrams.</b> The <code>mermaid-diagrams</code> skill guides the model, and fenced Mermaid blocks render inline.</sub>
+      <br><br>
+      <img alt="The sessions rail listing auto-named chats and the workspace files the agent created" src="docs/screenshots/sessions.png"><br>
+      <sub><b>Sessions and files.</b> Chats are auto-named and persisted; every file the agent touches is listed under Files.</sub>
+    </td>
+  </tr>
+</table>
 
 ## Running locally
 
@@ -127,3 +151,7 @@ Azure OpenAI is used only when `OPENAI_API_KEY` is unset and
 `AZURE_OPENAI_ENDPOINT` / `AZURE_OPENAI_DEPLOYMENT` are set. It authenticates
 with `DefaultAzureCredential`. See `.env.example` for all settings. For
 Docker, add `--group azure` to the `uv sync` line in the `Dockerfile`.
+
+---
+
+<sub>p.s. my cat is called Humphrey. The cat did not help with the code.</sub>
