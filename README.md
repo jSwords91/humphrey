@@ -26,6 +26,12 @@ it inline as an artefact.</sub>
 
 <table>
   <tr>
+    <td colspan="2">
+      <img alt="Humphrey's start screen: the logo, 'How can I help?', and the message composer" src="docs/screenshots/start.png"><br>
+      <sub><b>Start screen.</b> A quiet place to begin: type a message, attach an image, or invoke a skill with <code>/skill:&lt;name&gt;</code>.</sub>
+    </td>
+  </tr>
+  <tr>
     <td width="50%" valign="top">
       <img alt="An edit tool call expanded to show its arguments and a coloured diff, followed by a test run and a summary" src="docs/screenshots/code-edit.png"><br>
       <sub><b>Edits as diffs.</b> Each tool call is a collapsible card; <code>edit</code> shows its arguments, a coloured diff and the result, then <code>bash</code> verifies the fix.</sub>
