@@ -1,6 +1,8 @@
 (() => {
   const SESSION_KEY = "humphrey.sessionId";
-  const CONTEXT_BUDGET = 128_000;
+  // Replaced from /healthz: the budget auto-compaction works to, so the
+  // context bar measures against the same number as the server.
+  let contextBudget = 128_000;
 
   const stage = document.getElementById("stage");
   const thread = document.getElementById("thread");
@@ -69,10 +71,15 @@
   let toolsUsed = 0;
   let charsIn = 0;
   let charsOut = 0;
-  /** @type {number} */
+  // This chat's usage, every model call added up (a turn that uses tools is
+  // several calls). cachedIn is part of tokensIn, reasoningOut of tokensOut.
   let tokensIn = 0;
-  /** @type {number} */
   let tokensOut = 0;
+  let cachedIn = 0;
+  let reasoningOut = 0;
+  // The latest call alone: its input already holds the whole conversation,
+  // so input + output is how full the context is now.
+  let contextTokens = 0;
   /** @type {Map<string, any>} */
   let liveTools = new Map();
   /** @type {number | null} */
@@ -1561,12 +1568,22 @@
     });
   }
 
+  function resetUsage() {
+    tokensIn = 0;
+    tokensOut = 0;
+    cachedIn = 0;
+    reasoningOut = 0;
+    contextTokens = 0;
+  }
+
   function updateStats() {
     const turns = messages.filter((m) => m.role === "user").length;
-    const approxIn = tokensIn || Math.round(charsIn / 4);
-    const approxOut = tokensOut || Math.round(charsOut / 4);
-    const approxTokens = approxIn + approxOut;
-    const pct = Math.min(100, Math.round((approxTokens / CONTEXT_BUDGET) * 100));
+    // Without any reported usage (nothing sent yet), estimate from text.
+    const reported = tokensIn > 0 || tokensOut > 0;
+    const shownIn = reported ? tokensIn : Math.round(charsIn / 4);
+    const shownOut = reported ? tokensOut : Math.round(charsOut / 4);
+    const inContext = contextTokens || (reported ? 0 : shownIn + shownOut);
+    const pct = Math.min(100, Math.round((inContext / contextBudget) * 100));
 
     if (statTurns) {
       statTurns.textContent = String(turns);
@@ -1575,7 +1592,15 @@
       statTools.textContent = String(toolsUsed);
     }
     if (statIo) {
-      statIo.textContent = `${compactNum(approxIn)} / ${compactNum(approxOut)}`;
+      statIo.textContent = `${compactNum(shownIn)} in · ${compactNum(shownOut)} out`;
+      statIo.title = reported
+        ? `This chat so far, all model calls: ${tokensIn.toLocaleString()} in ` +
+          `(${cachedIn.toLocaleString()} from cache), ${tokensOut.toLocaleString()} out ` +
+          `(${reasoningOut.toLocaleString()} reasoning)`
+        : "Estimated from the text; no model usage reported yet";
+    }
+    if (statContext) {
+      statContext.title = `${inContext.toLocaleString()} of ${contextBudget.toLocaleString()} tokens`;
     }
     if (statContext) {
       statContext.textContent = `${pct}%`;
@@ -2429,8 +2454,7 @@
     toolsUsed = 0;
     charsIn = 0;
     charsOut = 0;
-    tokensIn = 0;
-    tokensOut = 0;
+    resetUsage();
     clearTranscript();
     setActive(false);
     setRunning(false);
@@ -2536,21 +2560,18 @@
       toolsUsed = 0;
       charsIn = 0;
       charsOut = 0;
-      // Real usage isn't attached to individual messages in this response
-      // (only the last assistant turn's cumulative usage is), so seed the
-      // real counters from that and let the per-message loop below only
-      // fill in the char-based fallback for sessions with no usage yet
-      // (e.g. mock mode, or a session with no assistant reply).
-      tokensIn = 0;
-      tokensOut = 0;
+      // The server adds up every model call in the chat (usage_totals); the
+      // latest call alone (last_usage) says how full the context is. The
+      // loop below only fills the text-based estimate for chats with no
+      // usage yet.
+      resetUsage();
+      const totals = data.usage_totals || {};
+      tokensIn = Number(totals.input) || 0;
+      tokensOut = Number(totals.output) || 0;
+      cachedIn = Number(totals.cached_input) || 0;
+      reasoningOut = Number(totals.reasoning_output) || 0;
       if (data.last_usage && typeof data.last_usage === "object") {
-        const u = data.last_usage;
-        if (typeof u.input === "number") {
-          tokensIn = u.input;
-        }
-        if (typeof u.output === "number") {
-          tokensOut = u.output;
-        }
+        contextTokens = (Number(data.last_usage.input) || 0) + (Number(data.last_usage.output) || 0);
       }
       setToolStat("—");
       /** @type {{ ts: number, el: Element }[]} */
@@ -2614,6 +2635,9 @@
         throw new Error("health failed");
       }
       const data = await res.json();
+      if (Number(data.context_window_tokens) > 0) {
+        contextBudget = Number(data.context_window_tokens);
+      }
       const providerLabels = {
         mock: "mock",
         chatgpt: "ChatGPT plan",
@@ -2772,17 +2796,16 @@
 
     if (type === "message_end") {
       if (event.usage && typeof event.usage === "object") {
-        // Each turn's usage.input is already a cumulative count (the whole
-        // transcript is resent every call), so the latest turn's numbers ARE
-        // the current context-window occupancy - replace, don't accumulate,
-        // or multi-turn conversations wildly over-report their own size.
+        // One model call. The chat's totals add every call up; the context
+        // is this call alone, since its input already holds the whole
+        // conversation (adding those up would count it again each call).
         const u = event.usage;
-        if (typeof u.input === "number") {
-          tokensIn = u.input;
-        }
-        if (typeof u.output === "number") {
-          tokensOut = u.output;
-        }
+        tokensIn += Number(u.input) || 0;
+        tokensOut += Number(u.output) || 0;
+        cachedIn += Number(u.cached_input) || 0;
+        reasoningOut += Number(u.reasoning_output) || 0;
+        contextTokens = (Number(u.input) || 0) + (Number(u.output) || 0);
+        updateStats();
       }
       if (state.assistantEl) {
         state.assistantEl.classList.remove("is-streaming");

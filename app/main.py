@@ -49,7 +49,7 @@ from app.settings import get_settings
 from app.tools import TOOLS, WORKSPACE_DIR
 from brain.events import ToolExecutionEndEvent
 from brain.cancel import SimpleCancellationToken
-from brain.messages import AssistantMessage, ImageContent, TextContent, UserMessage
+from brain.messages import AgentMessage, AssistantMessage, ImageContent, TextContent, UserMessage
 
 logger = logging.getLogger(__name__)
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
@@ -132,6 +132,9 @@ class SessionOut(BaseModel):
     updated_at: str
     title: str | None = None
     last_usage: dict[str, int] | None = None
+    # Every model call stored in this chat, added up: input, output, and the
+    # cached and reasoning parts of each (see providers' usage records).
+    usage_totals: dict[str, int] = Field(default_factory=dict)
     artifacts: list[dict[str, Any]] = Field(default_factory=list)
 
 
@@ -213,6 +216,9 @@ def healthz() -> dict[str, object]:
         "storage": settings.storage_backend,
         "provider": provider,
         "deployment": deployment,
+        # The budget auto-compaction works to (MODEL_CONTEXT_WINDOW_TOKENS),
+        # so the UI's context bar measures against the same number.
+        "context_window_tokens": settings.context_window_tokens,
     }
 
 
@@ -367,6 +373,7 @@ async def get_session(session_id: str) -> SessionOut:
         updated_at=session.updated_at,
         title=session.title,
         last_usage=last_usage,
+        usage_totals=_usage_totals(session.messages),
         artifacts=session.artifacts,
     )
 
@@ -436,6 +443,21 @@ async def finish_turn(
     _finishing.add(task)
     task.add_done_callback(_finishing.discard)
     await asyncio.shield(task)
+
+
+USAGE_KEYS = ("input", "output", "cached_input", "reasoning_output")
+
+
+def _usage_totals(messages: list[AgentMessage]) -> dict[str, int]:
+    """Usage summed over every model call in the transcript (each one is an
+    assistant message, tool-calling steps included). Chats saved before the
+    cached and reasoning parts were recorded just add up to 0 for those."""
+    totals = dict.fromkeys(USAGE_KEYS, 0)
+    for message in messages:
+        if isinstance(message, AssistantMessage):
+            for key in USAGE_KEYS:
+                totals[key] += int(message.usage.get(key, 0) or 0)
+    return totals
 
 
 def _require_active(session_id: str):

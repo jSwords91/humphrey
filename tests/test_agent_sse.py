@@ -489,3 +489,43 @@ async def test_agent_endpoint_degrades_an_unsupported_image_to_a_visible_note(
 async def test_chat_message_requires_content_or_at_least_one_image(client: AsyncClient) -> None:
     response = await client.post("/api/agent", json={"message": {"content": ""}})
     assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_a_chats_usage_totals_count_every_model_call(client: AsyncClient) -> None:
+    """One turn can take several model calls (one per tool step). The last
+    call alone said "out: 22" for a turn that wrote 1,242 tokens; the totals
+    must count them all. Usage figures are from a real turn."""
+    from brain.messages import AssistantMessage, UserMessage
+    from app.sessions import Session, get_session_store
+
+    def step(i: int, o: int, cached: int = 0, reasoning: int = 0) -> AssistantMessage:
+        usage = {"input": i, "output": o, "total_tokens": i + o}
+        if cached or reasoning:
+            usage |= {"cached_input": cached, "reasoning_output": reasoning}
+        return AssistantMessage(content="", model="m", usage=usage)
+
+    await get_session_store().save(
+        Session(
+            id="usagetotals0001",
+            messages=[
+                UserMessage(content="make me a chart"),
+                step(1079, 96),  # saved before cached/reasoning were recorded
+                step(2603, 1124, cached=1024, reasoning=300),
+                step(3759, 22, cached=2560, reasoning=10),
+            ],
+        )
+    )
+    body = (await client.get("/api/sessions/usagetotals0001")).json()
+    assert body["usage_totals"] == {
+        "input": 7441,
+        "output": 1242,
+        "cached_input": 3584,
+        "reasoning_output": 310,
+    }
+    assert body["last_usage"]["output"] == 22  # still there: the context bar uses it
+
+
+@pytest.mark.asyncio
+async def test_healthz_reports_the_context_budget(client: AsyncClient) -> None:
+    assert (await client.get("/healthz")).json()["context_window_tokens"] == 128000
