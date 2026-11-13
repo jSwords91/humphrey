@@ -313,4 +313,100 @@ async def test_end_to_end_an_image_survives_storage_and_reaches_the_model(
     listed = (await client.get("/api/sessions")).json()
     assert [s["id"] for s in listed] == [session_id]
     rows = (await client.get(f"/api/sessions/{session_id}")).json()["messages"]
-    assert rows[0]["content"] == "what is this?\n(+1 image attached)"
+    assert rows[0]["content"] == "what is this?"
+    [url] = rows[0]["images"]
+    assert url == f"/api/sessions/{session_id}/images/{image_file.name}"
+    served = await client.get(url)
+    assert served.content == image_file.read_bytes()
+    assert served.headers["content-type"] == "image/png"
+    assert "immutable" in served.headers["cache-control"]
+
+
+@pytest.mark.asyncio
+async def test_get_image_reads_the_session_file_and_that_one_image_only(tmp_path: Path) -> None:
+    store, backing = _store(tmp_path)
+    one, two = _png(), _png("coral")
+    session = _session_with_image("pictures00000001", one)
+    session.messages.append(UserMessage(content=[_image(two)]))
+    await store.save(session)
+
+    backing.gets.clear()
+    found = await store.get_image("pictures00000001", hashlib.sha256(two).hexdigest())
+    assert found == (two, "image/png")
+    assert backing.gets == [
+        "sessions/pictures00000001.json",
+        f"sessions-images/{hashlib.sha256(two).hexdigest()}",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_get_image_serves_only_what_the_session_references(tmp_path: Path) -> None:
+    store, _ = _store(tmp_path)
+    mine, theirs = _png(), _png("coral")
+    await store.save(_session_with_image("pictures00000001", mine))
+    await store.save(_session_with_image("pictures00000002", theirs))
+
+    their_digest = hashlib.sha256(theirs).hexdigest()
+    assert await store.get_image("pictures00000001", their_digest) is None  # stored, not referenced
+    assert await store.get_image("pictures00000001", "0" * 64) is None
+    assert await store.get_image("pictures00000001", "../../sessions/pictures00000002.json") is None
+    assert await store.get_image("nosuchsession0001", their_digest) is None
+    assert await store.get_image("pictures00000002", their_digest) == (theirs, "image/png")
+
+
+@pytest.mark.asyncio
+async def test_get_image_serves_an_inline_image_from_an_older_session(tmp_path: Path) -> None:
+    store, backing = _store(tmp_path)
+    blob = _png()
+    old = _session_with_image("pictures00000001", blob)
+    backing.put_bytes("sessions/pictures00000001.json", json.dumps(old.to_dict()).encode())
+    assert await store.get_image("pictures00000001", hashlib.sha256(blob).hexdigest()) == (
+        blob,
+        "image/png",
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_memory_store_serves_images_too() -> None:
+    from app.sessions import MemorySessionStore
+
+    store = MemorySessionStore()
+    blob = _png()
+    await store.save(_session_with_image("pictures00000001", blob))
+    digest = hashlib.sha256(blob).hexdigest()
+    assert await store.get_image("pictures00000001", digest) == (blob, "image/png")
+    assert await store.get_image("pictures00000001", "0" * 64) is None
+    assert await store.get_image("nosuchsession0001", digest) is None
+
+
+@pytest.mark.asyncio
+async def test_the_image_route_never_serves_a_stored_record_as_markup(client) -> None:
+    """A tampered record claiming text/html is served as opaque bytes."""
+    from app.sessions import get_session_store
+
+    payload = b"<script>alert(1)</script>"
+    session = Session(
+        id="pictures00000001",
+        messages=[
+            UserMessage(
+                content=[
+                    ImageContent(data=base64.b64encode(payload).decode("ascii"), mime_type="text/html")
+                ]
+            )
+        ],
+    )
+    await get_session_store().save(session)
+    response = await client.get(
+        f"/api/sessions/pictures00000001/images/{hashlib.sha256(payload).hexdigest()}"
+    )
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/octet-stream"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["content-security-policy"] == "sandbox"
+
+
+@pytest.mark.asyncio
+async def test_the_image_route_rejects_bad_ids_and_unknown_images(client) -> None:
+    assert (await client.get(f"/api/sessions/bad!/images/{'0' * 64}")).status_code in {404, 422}
+    assert (await client.get(f"/api/sessions/pictures00000001/images/{'0' * 64}")).status_code == 404
+    assert (await client.get("/api/sessions/pictures00000001/images/not-a-hash")).status_code == 404

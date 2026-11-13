@@ -4,8 +4,6 @@ STORAGE_BACKEND selects one (see app/storage.py)."""
 from __future__ import annotations
 
 import base64
-import binascii
-import hashlib
 import json
 import logging
 import re
@@ -16,15 +14,16 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Protocol
 
+from app.context_window import COMPACTION_SUMMARY_PREFIX
+from app.image_processing import image_bytes, image_digest
+from app.rendering.history import HistoryRow, history_rows
 from app.settings import Settings, get_settings
 from app.storage import ObjectStore, get_object_store
 from brain.messages import (
-    COMPACTION_SUMMARY_PREFIX,
     AgentMessage,
     UserMessage,
     message_from_dict,
     message_to_dict,
-    ui_messages,
 )
 from brain.provider import ModelProvider
 
@@ -42,15 +41,6 @@ def new_session_id() -> str:
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-@dataclass(slots=True)
-class ChatMessage:
-    """UI-facing user/assistant text (projection of the full transcript)."""
-
-    role: str
-    content: str
-    ts: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,19 +104,20 @@ class Session:
             )
         )
 
-    def ui_chat_messages(self) -> list[ChatMessage]:
-        rows = ui_messages(self.messages)
-        # Each compaction shows where it happened, so rows stay in time
-        # order (the frontend places artefacts by timestamp).
-        for compaction in self.compactions:
-            when = compaction.created_ms
-            at = next((i for i, r in enumerate(rows) if r["ts"] >= when), len(rows))
-            rows.insert(at, {"role": "context_summary", "content": compaction.summary, "ts": when})
-        _order_legacy_summaries(rows)
-        return [
-            ChatMessage(role=row["role"], content=row["content"], ts=row.get("ts"))
-            for row in rows
-        ]
+    def history_rows(self) -> list[HistoryRow]:
+        """The transcript as the UI's history view shows it, with each
+        compaction's summary where it happened (app/rendering/history.py)."""
+        return history_rows(self.messages, [(c.created_ms, c.summary) for c in self.compactions])
+
+    def find_image(self, digest: str) -> tuple[bytes, str] | None:
+        """The bytes and type of an image attached in this session, by digest."""
+        for message in self.messages:
+            if isinstance(message, UserMessage):
+                for image in message.images:
+                    data = image_bytes(image.data)
+                    if data is not None and image_digest(data) == digest:
+                        return data, image.mime_type
+        return None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -213,16 +204,6 @@ def _load_compactions(raw: object, message_count: int) -> list[Compaction]:
     return compactions
 
 
-def _order_legacy_summaries(rows: list[dict[str, Any]]) -> None:
-    """Sessions compacted before schema 4 stored the summary inline, as the
-    first message, stamped later than the messages kept after it. Pull such
-    a row's time back to just before the next row so artefacts from the
-    kept turns are placed after it, not above it."""
-    for i in range(len(rows) - 2, -1, -1):
-        if rows[i]["role"] == "context_summary" and rows[i]["ts"] > rows[i + 1]["ts"]:
-            rows[i]["ts"] = rows[i + 1]["ts"] - 1
-
-
 @dataclass(slots=True)
 class SessionSummary:
     id: str
@@ -237,6 +218,11 @@ class SessionStore(Protocol):
     async def save(self, session: Session) -> None: ...
 
     async def list_recent(self, *, limit: int = 20) -> list[SessionSummary]: ...
+
+    async def get_image(self, session_id: str, digest: str) -> tuple[bytes, str] | None:
+        """The bytes and type of an image the session references, by digest,
+        or None if it doesn't reference one (so it serves nothing else)."""
+        ...
 
 
 class MemorySessionStore:
@@ -253,6 +239,10 @@ class MemorySessionStore:
         session.schema_version = SESSION_SCHEMA_VERSION
         self._sessions[session.id] = session
 
+    async def get_image(self, session_id: str, digest: str) -> tuple[bytes, str] | None:
+        session = self._sessions.get(session_id)
+        return session.find_image(digest) if session is not None else None
+
     async def list_recent(self, *, limit: int = 20) -> list[SessionSummary]:
         items = sorted(
             self._sessions.values(),
@@ -264,7 +254,7 @@ class MemorySessionStore:
                 id=s.id,
                 updated_at=s.updated_at,
                 title=s.title,
-                message_count=len(s.ui_chat_messages()),
+                message_count=len(s.history_rows()),
             )
             for s in items[:limit]
         ]
@@ -387,16 +377,11 @@ class ObjectStoreSessionStore:
         images: dict[str, tuple[bytes, str]] = {}
         for block in self._image_blocks(data):
             encoded = block.get("data")
-            if not isinstance(encoded, str):
-                continue
-            try:
-                blob = base64.b64decode(encoded, validate=True)
-            except (binascii.Error, ValueError):
+            blob = image_bytes(encoded) if isinstance(encoded, str) else None
+            if blob is None:
                 continue  # keep it inline rather than lose it
-            digest = hashlib.sha256(blob).hexdigest()
-            # Serialized by alias (brain.messages.WireModel), so "mimeType".
-            mime_type = block.get("mimeType") or block.get("mime_type")
-            images[digest] = (blob, str(mime_type or "application/octet-stream"))
+            digest = image_digest(blob)
+            images[digest] = (blob, _block_mime_type(block))
             del block["data"]
             block["ref"] = digest
         return images
@@ -426,6 +411,35 @@ class ObjectStoreSessionStore:
                 block["data"] = base64.b64encode(blob).decode("ascii")
                 del block["ref"]
                 self._remember_image(digest)
+
+    async def get_image(self, session_id: str, digest: str) -> tuple[bytes, str] | None:
+        if not SAFE_SESSION_ID.match(session_id) or not _SHA256.match(digest):
+            return None
+        from asyncio import to_thread
+
+        return await to_thread(self._get_image_sync, session_id, digest)
+
+    def _get_image_sync(self, session_id: str, digest: str) -> tuple[bytes, str] | None:
+        # Reads the session object (small: its images are stored apart) and
+        # the one image asked for, never the session's other images.
+        raw = self._store.get_bytes(self._key(session_id))
+        if raw is None:
+            return None
+        try:
+            data = json.loads(raw.decode("utf-8"))
+        except ValueError:
+            return None
+        if not isinstance(data, dict):
+            return None
+        for block in self._image_blocks(data):
+            if block.get("ref") == digest:
+                blob = self._store.get_bytes(self._image_key(digest))
+                return (blob, _block_mime_type(block)) if blob is not None else None
+            encoded = block.get("data")  # saved before images were stored apart
+            blob = image_bytes(encoded) if isinstance(encoded, str) else None
+            if blob is not None and image_digest(blob) == digest:
+                return blob, _block_mime_type(block)
+        return None
 
     async def list_recent(self, *, limit: int = 20) -> list[SessionSummary]:
         from asyncio import to_thread
@@ -491,6 +505,14 @@ class ObjectStoreSessionStore:
 
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _block_mime_type(block: dict[str, Any]) -> str:
+    # Serialized by alias (brain.messages.WireModel), so "mimeType".
+    mime_type = block.get("mimeType") or block.get("mime_type")
+    return str(mime_type or "application/octet-stream")
+
+
 MISSING_IMAGE_NOTE = "(An image was attached here, but its stored copy is missing.)"
 
 
@@ -498,7 +520,7 @@ def _summary_of(session: Session) -> dict[str, Any]:
     return {
         "id": session.id,
         "title": session.title,
-        "message_count": len(session.ui_chat_messages()),
+        "message_count": len(session.history_rows()),
     }
 
 
@@ -546,6 +568,14 @@ class FallbackSessionStore:
             except Exception as exc:  # noqa: BLE001
                 self._demote(exc)
         await self._fallback.save(session)
+
+    async def get_image(self, session_id: str, digest: str) -> tuple[bytes, str] | None:
+        if self._primary is not None:
+            try:
+                return await self._primary.get_image(session_id, digest)
+            except Exception as exc:  # noqa: BLE001
+                self._demote(exc)
+        return await self._fallback.get_image(session_id, digest)
 
     async def list_recent(self, *, limit: int = 20) -> list[SessionSummary]:
         if self._primary is not None:

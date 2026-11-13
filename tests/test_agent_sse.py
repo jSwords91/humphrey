@@ -422,8 +422,13 @@ async def test_agent_endpoint_accepts_an_image_only_message(client: AsyncClient)
     assert first.images[0].mime_type == "image/png"
 
     stored = await client.get(f"/api/sessions/{session_id}")
-    ui_rows = stored.json()["messages"]
-    assert "1 image" in ui_rows[0]["content"]
+    [row] = [r for r in stored.json()["messages"] if r["role"] == "user"]
+    assert row["content"] == ""
+    [url] = row["images"]
+    image = await client.get(url)
+    assert image.status_code == 200
+    assert image.headers["content-type"] == "image/png"
+    assert base64.b64decode(first.images[0].data) == image.content
 
 
 @pytest.mark.asyncio

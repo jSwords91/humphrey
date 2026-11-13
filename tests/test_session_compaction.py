@@ -13,9 +13,9 @@ import json
 
 import pytest
 
-from app.context_window import estimate_context_tokens
+from app.context_window import COMPACTION_SUMMARY_PREFIX, estimate_context_tokens
 from app.sessions import Compaction, Session
-from brain.messages import COMPACTION_SUMMARY_PREFIX, AssistantMessage, UserMessage
+from brain.messages import AssistantMessage, UserMessage
 
 
 def _turns(n: int, *, start_ms: int = 1_000_000) -> list:
@@ -123,7 +123,7 @@ def test_ui_shows_every_message_and_the_summary_where_it_happened() -> None:
         AssistantMessage(content="reply", model="mock", timestamp_ms=1_002_500),
     ]
 
-    rows = session.ui_chat_messages()
+    rows = session.history_rows()
     assert [(r.role, r.content) for r in rows] == [
         ("user", "q0"),
         ("assistant", "a0"),
@@ -143,7 +143,7 @@ def test_a_legacy_inline_summary_is_ordered_before_the_messages_it_precedes() ->
     legacy = UserMessage(content=COMPACTION_SUMMARY_PREFIX + "old summary", timestamp_ms=9_999_999)
     session = Session(id="s", messages=[legacy, *kept])
 
-    rows = session.ui_chat_messages()
+    rows = session.history_rows()
     assert rows[0].role == "context_summary"
     assert [r.ts for r in rows] == sorted(r.ts for r in rows)
     assert rows[0].ts < kept[0].timestamp_ms

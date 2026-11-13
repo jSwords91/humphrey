@@ -1404,16 +1404,18 @@
       wrap.append(body);
     }
 
-    // Live-turn-only preview (see openSession's reload path): the actual
-    // image bytes aren't round-tripped back from the server on a session
-    // reload, so this only ever renders for the message just sent in this
-    // tab, from local blob/data URLs - never persisted or refetched.
+    // Local preview URLs for a message just sent; for a reopened chat, the
+    // server's image URLs, which never change, so the browser caches them.
     if (kind === "user" && opts.images && opts.images.length > 0) {
       const gallery = document.createElement("div");
       gallery.className = "msg-user-images";
       for (const url of opts.images) {
         const img = document.createElement("img");
         img.src = url;
+        img.loading = "lazy";
+        img.decoding = "async";
+        // Its height is unknown until it loads; stay at the bottom if pinned.
+        img.addEventListener("load", pinToBottom, { once: true });
         img.alt = "Attached image";
         gallery.append(img);
       }
@@ -2277,7 +2279,9 @@
         return;
       }
       const data = await res.json();
-      const rows = (data.messages || []).filter((m) => m && m.content);
+      const rows = (data.messages || []).filter(
+        (m) => m && (m.content || (Array.isArray(m.images) && m.images.length > 0)),
+      );
       // `messages` counts the user/assistant turns shown in the UI; a
       // context-summary row is rendered below but kept out of it.
       messages = rows.filter((m) => m.role === "user" || m.role === "assistant");
@@ -2318,7 +2322,10 @@
           } else {
             charsOut += msg.content.length;
           }
-          el = appendMessage(msg.role, msg.content, { animate: false });
+          el = appendMessage(msg.role, msg.content, {
+            animate: false,
+            images: Array.isArray(msg.images) ? msg.images : [],
+          });
         }
         if (el && typeof msg.ts === "number") placed.push({ ts: msg.ts, el });
       }

@@ -115,6 +115,8 @@ class SessionMessageOut(BaseModel):
     role: Literal["user", "assistant", "context_summary"]
     content: str
     ts: int | None = None
+    # URLs of the images attached to a user turn (GET /api/sessions/{id}/images/...).
+    images: list[str] = Field(default_factory=list)
 
 
 class SessionOut(BaseModel):
@@ -233,15 +235,46 @@ async def get_session(session_id: str) -> SessionOut:
     return SessionOut(
         id=session.id,
         messages=[
-            SessionMessageOut(role=m.role, content=m.content, ts=m.ts)  # type: ignore[arg-type]
-            for m in session.ui_chat_messages()
-            if m.role in {"user", "assistant", "context_summary"}
+            SessionMessageOut(
+                role=row.role,
+                content=row.content,
+                ts=row.ts,
+                images=[f"/api/sessions/{session.id}/images/{digest}" for digest in row.images],
+            )
+            for row in session.history_rows()
         ],
         created_at=session.created_at,
         updated_at=session.updated_at,
         title=session.title,
         last_usage=last_usage,
         artifacts=session.artifacts,
+    )
+
+
+_SERVABLE_IMAGE_TYPES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
+
+
+@app.get("/api/sessions/{session_id}/images/{digest}")
+async def get_session_image(session_id: str, digest: str) -> Response:
+    """An image attached in a session. Served only when that session
+    references it. The URL names the image's content, so it never changes
+    and the browser may cache it for good."""
+    if not SAFE_SESSION_ID.match(session_id):
+        raise HTTPException(status_code=422, detail="Invalid session id.")
+    found = await get_session_store().get_image(session_id, digest)
+    if found is None:
+        raise HTTPException(status_code=404, detail="Image not found.")
+    data, mime_type = found
+    return Response(
+        content=data,
+        # What uploads become (app/image_processing.py). Anything else in a
+        # stored record is served as opaque bytes, never as something to run.
+        media_type=mime_type if mime_type in _SERVABLE_IMAGE_TYPES else "application/octet-stream",
+        headers={
+            "Cache-Control": "private, max-age=31536000, immutable",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "sandbox",
+        },
     )
 
 

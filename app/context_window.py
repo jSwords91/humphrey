@@ -31,7 +31,6 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from brain.messages import (
-    COMPACTION_SUMMARY_PREFIX,
     AgentMessage,
     AssistantMessage,
     ThinkingContent,
@@ -50,9 +49,10 @@ SUMMARY_MESSAGE_CHAR_LIMIT = 500
 DEFAULT_COMPACTION_RESERVE_TOKENS = 16_384
 DEFAULT_COMPACTION_KEEP_RECENT_TOKENS = 20_000
 
-__all__ = [
-    "COMPACTION_SUMMARY_PREFIX",  # re-exported: defined in app.messages, see there for why
-]
+# Starts the synthetic user message that stands in for compacted history in
+# the model's context (app/sessions builds it from the latest compaction).
+# Compaction is an app concern, so brain/ never sees this as anything but text.
+COMPACTION_SUMMARY_PREFIX = "Previous conversation summary:\n"
 
 SUMMARIZATION_SYSTEM_PROMPT = (
     "You are a context summarization assistant. Your task is to read a conversation "
