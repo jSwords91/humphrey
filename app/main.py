@@ -80,27 +80,26 @@ class ImageAttachment(BaseModel):
     data: str = Field(..., min_length=1, max_length=75_000_000)
 
 
-class ChatMessage(BaseModel):
-    role: Literal["user", "assistant"]
-    # Higher than QueueRequest's 8000 below: the frontend resends the whole
-    # transcript on every turn (frontend/app.js), so this bounds not just a
-    # typed human message but also past ASSISTANT replies - which can run
-    # much longer, e.g. a detailed multi-case-study bid answer. Found live:
-    # a bid-responses skill reply exceeded 8000 chars and then failed
-    # validation on every subsequent turn in that session, since the
-    # oversized message gets resent every time.
+class PromptMessage(BaseModel):
+    """The one new user turn. Everything earlier comes from the stored
+    session, never from the client, so the request stays the same size
+    however long the conversation gets. (The client used to resend the
+    whole transcript, which the server ignored, and a list cap on it broke
+    every session at its 21st message.) 40k characters leaves room for a
+    pasted document."""
+
     content: str = Field(default="", max_length=40_000)
     images: list[ImageAttachment] = Field(default_factory=list, max_length=4)
 
     @model_validator(mode="after")
-    def _require_content_or_images(self) -> ChatMessage:
+    def _require_content_or_images(self) -> PromptMessage:
         if not self.content.strip() and not self.images:
             raise ValueError("content or at least one image is required")
         return self
 
 
 class AgentRequest(BaseModel):
-    messages: list[ChatMessage] = Field(..., min_length=1, max_length=40)
+    message: PromptMessage
     session_id: str | None = Field(default=None, max_length=64)
     # Per-request OpenAI model; must be one of /api/models. Omit for the default.
     model: str | None = Field(default=None, max_length=100)
@@ -319,9 +318,6 @@ def _process_uploaded_images(attachments: list[ImageAttachment]) -> tuple[list[I
 
 @app.post("/api/agent")
 async def agent(body: AgentRequest, request: Request) -> StreamingResponse:
-    if body.messages[-1].role != "user":
-        raise HTTPException(status_code=422, detail="Last message must be from the user.")
-
     store = get_session_store()
     session_id = body.session_id
     if session_id is not None and not SAFE_SESSION_ID.match(session_id):
@@ -334,7 +330,7 @@ async def agent(body: AgentRequest, request: Request) -> StreamingResponse:
         session_id = new_session_id()
         session = Session(id=session_id)
 
-    latest_user = body.messages[-1].content
+    latest_user = body.message.content
     history = list(session.messages)
     if history and isinstance(history[-1], UserMessage) and history[-1].content == latest_user:
         history = history[:-1]
@@ -360,7 +356,7 @@ async def agent(body: AgentRequest, request: Request) -> StreamingResponse:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     prompt_text = expanded if expanded is not None else latest_user
 
-    image_contents, image_notes = _process_uploaded_images(body.messages[-1].images)
+    image_contents, image_notes = _process_uploaded_images(body.message.images)
     if image_notes:
         notes_text = "\n".join(image_notes)
         prompt_text = f"{prompt_text}\n\n{notes_text}" if prompt_text else notes_text

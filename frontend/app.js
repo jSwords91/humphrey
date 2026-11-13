@@ -2278,9 +2278,8 @@
       }
       const data = await res.json();
       const rows = (data.messages || []).filter((m) => m && m.content);
-      // Only user/assistant turns are ever resent to /api/agent (ChatMessage
-      // on the wire has no "context_summary" role) - a context-summary row
-      // is rendered below but kept out of this array.
+      // `messages` counts the user/assistant turns shown in the UI; a
+      // context-summary row is rendered below but kept out of it.
       messages = rows.filter((m) => m.role === "user" || m.role === "assistant");
       sessionId = id;
       localStorage.setItem(SESSION_KEY, id);
@@ -2813,16 +2812,19 @@
           "Content-Type": "application/json",
           Accept: "text/event-stream",
         },
+        // Only the new turn: the server rebuilds everything earlier from the
+        // stored session, so `messages` here is UI state, never resent.
         body: JSON.stringify({
-          messages,
+          message: {
+            content: pushedMessage.content,
+            ...(pushedMessage.images ? { images: pushedMessage.images } : {}),
+          },
           session_id: sessionId,
           ...(selectedModel ? { model: selectedModel } : {}),
         }),
         signal: controller.signal,
       });
-      // Images are only ever read from the *last* message server-side
-      // (app/main.py's /api/agent) - strip them here so the next turn's
-      // full-transcript resend doesn't re-upload the same bytes forever.
+      // The bytes have been sent; don't keep them in the UI's message list.
       delete pushedMessage.images;
 
       const headerSession = res.headers.get("X-Session-Id");
