@@ -130,25 +130,6 @@ button:active:not(:disabled):not(.latest-btn):not(.btn-send) {
   opacity: 0.85;
 }
 
-/* While any tool runs, the header's bottom edge becomes the travelling
-   band - the one place it is always in view, whatever is scrolled. */
-.header::after {
-  content: "";
-  position: absolute;
-  inset: auto 0 -1px;
-  height: 3px;
-  background: var(--hb-band);
-  background-size: 28px 100%;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 240ms var(--ease);
-}
-
-.shell[data-tools="1"] .header::after {
-  opacity: 1;
-  animation: hb-band 1.2s linear infinite;
-}
-
 .header-right {
   gap: var(--space-2);
 }
@@ -1571,15 +1552,45 @@ button:active:not(:disabled):not(.latest-btn):not(.btn-send) {
 }
 
 .tool-cluster-summary {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 0.55rem;
   list-style: none;
   cursor: pointer;
-  padding: 0.5rem 0.7rem;
+  padding: calc(0.5rem + var(--hb-band-h)) 0.7rem 0.5rem;
   border-radius: var(--radius-sm);
   background: var(--color-elevated);
   border: 1px solid var(--color-border);
+  overflow: hidden;
+}
+
+/* The same status line as a tool card's top edge. A cluster collapses
+   while its calls run, hiding the cards' own lines, so the travelling band
+   shows here, where the work is. It runs while any call is still running,
+   even after one has failed; then it settles to done or error. */
+.tool-cluster-summary::after {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: var(--hb-band-h);
+  background: var(--color-hairline);
+}
+
+.tool-cluster[data-running="1"] > .tool-cluster-summary::after {
+  background: var(--hb-band);
+  background-size: 28px 100%;
+  animation: hb-band 1.2s linear infinite;
+}
+
+.tool-cluster[data-running="0"][data-state="done"] > .tool-cluster-summary::after {
+  background: var(--hb-accent);
+  transform-origin: left;
+  animation: hb-grow 0.6s ease-out;
+}
+
+.tool-cluster[data-running="0"][data-state="error"] > .tool-cluster-summary::after {
+  background: var(--hb-attention);
 }
 
 .tool-cluster-summary::-webkit-details-marker,
@@ -2524,7 +2535,7 @@ button:active:not(:disabled):not(.latest-btn):not(.btn-send) {
   .artifact::before,
   .artifact-viewer[open],
   .activity-dock::before,
-  .shell[data-tools="1"] .header::after {
+  .tool-cluster-summary::after {
     animation: none !important;
   }
 

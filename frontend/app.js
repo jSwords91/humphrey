@@ -2009,31 +2009,8 @@
     return `${display}(${parts.join(", ")}${more})`;
   }
 
-  // Header band: on while any tool runs, held briefly so sub-second tools
-  // still read as "something ran" instead of a flicker.
-  const TOOL_BAND_MIN_MS = 900;
-  let toolBandSince = 0;
-  let toolBandTimer = 0;
-
-  /** @param {boolean} running */
-  function setToolsRunning(running) {
-    window.clearTimeout(toolBandTimer);
-    if (running) {
-      if (stage.dataset.tools !== "1") {
-        toolBandSince = performance.now();
-        stage.dataset.tools = "1";
-      }
-      return;
-    }
-    const remaining = TOOL_BAND_MIN_MS - (performance.now() - toolBandSince);
-    toolBandTimer = window.setTimeout(() => {
-      stage.dataset.tools = "0";
-    }, Math.max(0, remaining));
-  }
-
   function refreshActivityDock() {
     const running = [...liveTools.values()].filter((t) => t.el.dataset.state === "running");
-    setToolsRunning(running.length > 0);
     if (!running.length) {
       activityDock.hidden = true;
       activityList.replaceChildren();
@@ -2138,6 +2115,7 @@
     details.className = "tool-cluster";
     details.open = true; // a lone call renders exactly like a plain row
     details.dataset.state = "running";
+    details.dataset.running = "1"; // drives the band; see updateToolClusterChrome
     details.dataset.userToggled = "0";
 
     const summary = document.createElement("summary");
@@ -2169,6 +2147,8 @@
 
   /** @param {{ details: HTMLDetailsElement, summary: HTMLElement, label: HTMLElement, meta: HTMLElement, tool: string, total: number, running: number, done: number, error: number }} cluster */
   function updateToolClusterChrome(cluster) {
+    // Apart from state: a cluster with a failure can still have calls running.
+    cluster.details.dataset.running = cluster.running > 0 ? "1" : "0";
     const isCluster = cluster.total > 1;
     cluster.summary.hidden = !isCluster;
     if (!isCluster) {
