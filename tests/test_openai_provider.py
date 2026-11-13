@@ -442,15 +442,17 @@ async def test_models_endpoint_lists_openai_models(monkeypatch: pytest.MonkeyPat
         body = (await client.get("/api/models")).json()
         rejected = await client.post(
             "/api/agent",
-            json={"model": "gpt-z", "messages": [{"role": "user", "content": "hi"}]},
+            json={"model": "gpt-z", "message": {"content": "hi"}},
         )
     assert body == {
         "provider": "openai",
         "selectable": True,
         "default": "gpt-a",
         "models": ["gpt-a", "gpt-b", "gpt-c"],
+        "labels": {},
     }
     assert rejected.status_code == 422
+    assert rejected.json()["detail"] == "Unknown model: gpt-z"  # not just a malformed body
 
 
 async def test_models_endpoint_reports_mock_as_fixed() -> None:
@@ -460,4 +462,10 @@ async def test_models_endpoint_reports_mock_as_fixed() -> None:
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         body = (await client.get("/api/models")).json()
-    assert body == {"provider": "mock", "selectable": False, "default": "mock", "models": ["mock"]}
+    assert body == {
+        "provider": "mock",
+        "selectable": False,
+        "default": "mock",
+        "models": ["mock"],
+        "labels": {},
+    }

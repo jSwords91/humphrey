@@ -429,3 +429,24 @@ def _unlock(handle: Any) -> None:
         import fcntl
 
         fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+_instance: ChatGPTAuth | None = None
+
+
+def get_chatgpt_auth() -> ChatGPTAuth:
+    """The process's one ChatGPTAuth: its lock is what serializes refreshes
+    within this process, so there must be only one."""
+    global _instance
+    if _instance is None:
+        from pathlib import Path
+
+        from app.settings import get_settings
+
+        _instance = ChatGPTAuth(CredentialStore(Path(get_settings().credentials_dir)))
+    return _instance
+
+
+def reset_chatgpt_auth_for_tests() -> None:
+    global _instance
+    _instance = None

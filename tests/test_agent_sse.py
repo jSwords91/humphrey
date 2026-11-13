@@ -327,7 +327,10 @@ async def test_agent_endpoint_auto_compacts_a_large_history(
                 seen.append(list(messages))
             return super().stream(messages, tools, system=system, signal=signal)
 
-    monkeypatch.setattr(app.main, "get_provider", lambda model=None: RecordingProvider())
+    async def recording_provider(model=None):
+        return RecordingProvider()
+
+    monkeypatch.setattr(app.main, "build_provider", recording_provider)
 
     monkeypatch.setenv("MODEL_CONTEXT_WINDOW_TOKENS", "2000")
     reset_settings_for_tests()

@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import base64
 import binascii
+import html
 import logging
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
@@ -17,6 +18,7 @@ from starlette.responses import Response
 from starlette.types import Scope
 
 from app.agent import build_harness, system_prompt
+from app.auth.chatgpt import AuthError, SignInRequired, TemporaryAuthError, get_chatgpt_auth
 from app.artifacts import (
     ArtifactTracker,
     artifact_kind,
@@ -25,6 +27,7 @@ from app.artifacts import (
     scan_workspace,
 )
 from app.context_window import compact_if_needed
+from app.model_access import UnknownModel, build_provider, current_source, model_options
 from app.image_processing import (
     ImageProcessingFailure,
     ProcessedImage,
@@ -46,7 +49,6 @@ from app.tools import TOOLS, WORKSPACE_DIR
 from brain.events import ToolExecutionEndEvent
 from brain.cancel import SimpleCancellationToken
 from brain.messages import AssistantMessage, ImageContent, TextContent, UserMessage
-from providers import active_provider_kind, get_provider
 
 logger = logging.getLogger(__name__)
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
@@ -137,10 +139,31 @@ class SessionSummaryOut(BaseModel):
 
 
 class ModelsOut(BaseModel):
-    provider: str
+    provider: str  # the source: mock, chatgpt, openai, azure_openai or unconfigured
     selectable: bool
     default: str
     models: list[str]
+    # Display names, where the source gives them (the ChatGPT plan does).
+    labels: dict[str, str] = Field(default_factory=dict)
+
+
+class AuthStatusOut(BaseModel):
+    """What the UI may know about the ChatGPT sign-in. Never a token."""
+
+    signed_in: bool
+    email: str | None
+    active_source: Literal["api_key", "chatgpt"]
+    using_plan: bool
+    plan_notice_seen: bool
+    manage_usage_url: str
+
+
+class SourceRequest(BaseModel):
+    source: Literal["api_key", "chatgpt"]
+
+
+class SignInStartOut(BaseModel):
+    url: str
 
 
 class QueueOut(BaseModel):
@@ -165,9 +188,10 @@ def index() -> HTMLResponse:
 @app.get("/healthz")
 def healthz() -> dict[str, object]:
     settings = get_settings()
-    provider = active_provider_kind(settings)
+    provider = current_source()
     deployment = {
         "mock": "mock",
+        "chatgpt": settings.openai_model,
         "openai": settings.openai_model,
         "azure_openai": settings.azure_openai_deployment,
         "unconfigured": "unset",
@@ -184,20 +208,105 @@ def healthz() -> dict[str, object]:
 
 
 @app.get("/api/models", response_model=ModelsOut)
-def list_models() -> ModelsOut:
-    """Models the UI may offer. Only OpenAI supports switching; the mock and
-    the Azure adapter report their single fixed model."""
-    settings = get_settings()
-    provider = active_provider_kind(settings)
-    if provider == "openai":
-        models = list(settings.selectable_models)
-        return ModelsOut(provider=provider, selectable=True, default=models[0], models=models)
-    fixed = {
-        "mock": "mock",
-        "azure_openai": settings.azure_openai_deployment,
-        "unconfigured": "unset",
-    }[provider]
-    return ModelsOut(provider=provider, selectable=False, default=fixed, models=[fixed])
+async def list_models() -> ModelsOut:
+    """Models the UI may offer. An API key offers OPENAI_MODELS; a ChatGPT
+    plan offers the signed-in account's own list. The mock and the Azure
+    adapter report their single fixed model."""
+    options = await model_options()
+    return ModelsOut(
+        provider=options.source,
+        selectable=options.selectable,
+        default=options.default,
+        models=options.models,
+        labels=options.labels,
+    )
+
+
+# --- Sign in with ChatGPT (app/auth/chatgpt.py) --------------------------------
+
+
+def _json_only(request: Request) -> None:
+    """Refuse a POST without a JSON content type. A page on another site can
+    send a plain POST to localhost without asking first; a JSON one needs a
+    CORS preflight, which this app never grants. So no other site can sign
+    you out or switch your model source."""
+    if request.headers.get("content-type", "").split(";")[0].strip() != "application/json":
+        raise HTTPException(status_code=415, detail="Send this as application/json.")
+
+
+def _auth_http_error(exc: AuthError) -> HTTPException:
+    status = 503 if isinstance(exc, TemporaryAuthError) else 409 if isinstance(exc, SignInRequired) else 400
+    return HTTPException(status_code=status, detail=str(exc))
+
+
+@app.get("/api/auth/status", response_model=AuthStatusOut)
+def auth_status() -> AuthStatusOut:
+    return AuthStatusOut(**get_chatgpt_auth().status())
+
+
+@app.post("/api/auth/chatgpt/start", response_model=SignInStartOut, dependencies=[Depends(_json_only)])
+def start_chatgpt_sign_in(request: Request) -> SignInStartOut:
+    """The URL to open for signing in. OpenAI sends the browser back to this
+    same server, on 127.0.0.1 and the port it was reached on."""
+    port = request.url.port or (443 if request.url.scheme == "https" else 80)
+    return SignInStartOut(url=get_chatgpt_auth().start_sign_in(port))
+
+
+_CALLBACK_PAGE = """<!doctype html><meta charset="utf-8"><title>Humphrey</title>
+<body style="font: 15px/1.5 system-ui, sans-serif; max-width: 30rem; margin: 4rem auto; text-align: center">
+<h1 style="font-size: 18px; font-weight: 500">{title}</h1><p>{body}</p></body>"""
+
+
+@app.get("/api/auth/chatgpt/callback")
+async def chatgpt_sign_in_callback(request: Request) -> HTMLResponse:
+    """Where OpenAI sends the browser after sign-in. A plain page: Humphrey's
+    own tab picks up the result by checking the sign-in status."""
+    try:
+        email = await get_chatgpt_auth().complete_sign_in(dict(request.query_params))
+        title, body, status = "Signed in", f"Signed in as {email}. You can close this tab.", 200
+    except AuthError as exc:
+        title, body, status = "Sign-in didn't finish", str(exc), 400
+    return HTMLResponse(
+        _CALLBACK_PAGE.format(title=html.escape(title), body=html.escape(body)),
+        status_code=status,
+        headers={
+            "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'",
+            "Cache-Control": "no-store",
+            "Referrer-Policy": "no-referrer",  # the URL held a one-time code
+        },
+    )
+
+
+@app.post("/api/auth/source", response_model=AuthStatusOut, dependencies=[Depends(_json_only)])
+def set_model_source(body: SourceRequest) -> AuthStatusOut:
+    """Choose an API key (the default) or the signed-in ChatGPT plan."""
+    auth = get_chatgpt_auth()
+    try:
+        auth.set_active_source(body.source)
+    except AuthError as exc:
+        raise _auth_http_error(exc) from exc
+    return AuthStatusOut(**auth.status())
+
+
+@app.post(
+    "/api/auth/chatgpt/plan-notice-seen",
+    response_model=AuthStatusOut,
+    dependencies=[Depends(_json_only)],
+)
+def mark_plan_notice_seen() -> AuthStatusOut:
+    auth = get_chatgpt_auth()
+    auth.mark_plan_notice_seen()
+    return AuthStatusOut(**auth.status())
+
+
+@app.post("/api/auth/chatgpt/sign-out", response_model=AuthStatusOut, dependencies=[Depends(_json_only)])
+async def chatgpt_sign_out() -> AuthStatusOut:
+    auth = get_chatgpt_auth()
+    try:
+        await auth.sign_out()
+    except AuthError as exc:
+        raise _auth_http_error(exc) from exc
+    return AuthStatusOut(**auth.status())
 
 
 @app.get("/api/sessions", response_model=list[SessionSummaryOut])
@@ -365,12 +474,10 @@ async def agent(body: AgentRequest, request: Request) -> StreamingResponse:
 
     latest_user = body.message.content
     settings = get_settings()
-    model = None
-    if body.model and active_provider_kind(settings) == "openai":
-        if body.model not in settings.selectable_models:
-            raise HTTPException(status_code=422, detail=f"Unknown model: {body.model}")
-        model = body.model
-    provider = get_provider(model)
+    try:
+        provider = await build_provider(body.model)
+    except UnknownModel as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     try:
         expanded = expand_skill_command(latest_user, load_skills())

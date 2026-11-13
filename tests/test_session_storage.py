@@ -283,7 +283,10 @@ async def test_end_to_end_an_image_survives_storage_and_reaches_the_model(
                 seen.append(list(messages))
             return super().stream(messages, tools, system=system, signal=signal)
 
-    monkeypatch.setattr(app.main, "get_provider", lambda model=None: RecordingProvider())
+    async def recording_provider(model=None):
+        return RecordingProvider()
+
+    monkeypatch.setattr(app.main, "build_provider", recording_provider)
 
     png = base64.b64encode(_png()).decode("ascii")
     first = await client.post(
