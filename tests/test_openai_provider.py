@@ -220,7 +220,7 @@ async def test_openai_stream_maps_text_and_usage(monkeypatch: pytest.MonkeyPatch
         ]
     )
     provider_module._client.cache_clear()
-    monkeypatch.setattr(provider_module, "_client", lambda api_key: fake_client)
+    monkeypatch.setattr(provider_module, "_client", lambda api_key, max_retries=2: fake_client)
 
     provider = OpenAIProvider(get_settings())
     chunks = [
@@ -266,7 +266,7 @@ async def test_openai_stream_maps_tool_calls(monkeypatch: pytest.MonkeyPatch) ->
         ]
     )
     provider_module._client.cache_clear()
-    monkeypatch.setattr(provider_module, "_client", lambda api_key: fake_client)
+    monkeypatch.setattr(provider_module, "_client", lambda api_key, max_retries=2: fake_client)
 
     provider = OpenAIProvider(get_settings())
     chunks = [
@@ -352,7 +352,7 @@ async def test_openai_uses_responses_api_for_reasoning_model(
         ]
     )
     provider_module._client.cache_clear()
-    monkeypatch.setattr(provider_module, "_client", lambda api_key: fake_client)
+    monkeypatch.setattr(provider_module, "_client", lambda api_key, max_retries=2: fake_client)
 
     provider = OpenAIProvider(get_settings())
     chunks = [

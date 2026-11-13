@@ -10,13 +10,12 @@ from functools import lru_cache
 
 import httpx
 from azure.identity import DefaultAzureCredential, get_bearer_token_provider
-import openai
 from openai import AsyncAzureOpenAI, AsyncOpenAI
 
 from brain.cancel import CancellationToken
 from brain.messages import AgentMessage
 from providers.openai_adapter import messages_to_openai, tools_to_openai
-from providers.errors import from_openai_error
+from providers.retry import stream_with_retries
 from providers.openai_responses import (
     ResponsesStreamParser,
     build_responses_payload,
@@ -110,11 +109,12 @@ class AzureOpenAIProvider:
         system: str,
         signal: CancellationToken | None = None,
     ) -> AsyncIterator[ModelChunk]:
-        try:
-            async for chunk in self._stream(messages, tools, system=system, signal=signal):
-                yield chunk
-        except openai.APIError as exc:
-            raise from_openai_error(exc) from exc
+        async for chunk in stream_with_retries(
+            lambda: self._stream(messages, tools, system=system, signal=signal),
+            signal=signal,
+            retry_http=False,  # the SDK client keeps its own HTTP retries
+        ):
+            yield chunk
 
     async def _stream(
         self,
