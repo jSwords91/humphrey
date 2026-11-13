@@ -126,10 +126,14 @@ class LocalFileObjectStore:
         tmp.replace(path)  # atomic on POSIX and Windows
 
     def list_keys(self, prefix: str = "") -> list[ObjectMeta]:
-        if not self._root.is_dir():
+        # Walk only the directory the prefix names ("sessions/" -> sessions/),
+        # not the whole root, where stored images can far outnumber sessions.
+        directory, slash, _ = prefix.rpartition("/")
+        base = self._path_for(directory) if slash else self._root
+        if not base.is_dir():
             return []
         out: list[ObjectMeta] = []
-        for path in self._root.rglob("*"):
+        for path in base.rglob("*"):
             if not path.is_file() or path.name.endswith(".tmp"):
                 continue
             key = path.relative_to(self._root).as_posix()

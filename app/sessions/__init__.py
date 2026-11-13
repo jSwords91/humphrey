@@ -3,6 +3,9 @@ STORAGE_BACKEND selects one (see app/storage.py)."""
 
 from __future__ import annotations
 
+import base64
+import binascii
+import hashlib
 import json
 import logging
 import re
@@ -268,16 +271,44 @@ class MemorySessionStore:
 
 
 class ObjectStoreSessionStore:
-    """Persist sessions as JSON, one object per session at {prefix}/{id}.json,
-    via any ObjectStore (Azure Blob or local disk — see app/storage.py).
+    """Persist sessions through any ObjectStore (Azure Blob or local disk -
+    see app/storage.py), as three kinds of object:
+
+    {prefix}/{id}.json            the session, with each image replaced by a reference
+    {prefix}-images/{sha256}      an image's bytes, stored once however many turns
+                                  or sessions include it
+    {prefix}-summaries/{id}.json  its title and message count, so the session list
+                                  reads a few hundred bytes per session, not all of it
+
+    Images dominate a session's size (one is up to 5MB) and never change, so
+    keeping them out of the session object means a turn rewrites tens of KB,
+    not every image again. Everything above this class still sees ordinary
+    ImageContent: references are filled back in on load. Sessions saved
+    before this format load as they are and convert on their next save.
     """
+
+    # Bounds the record of image digests known to be stored (64-char strings).
+    _KNOWN_IMAGES_LIMIT = 50_000
 
     def __init__(self, store: ObjectStore, settings: Settings | None = None) -> None:
         self._store = store
         self._settings = settings or get_settings()
+        # Digests this process has written or read: re-saving them is skipped.
+        self._known_images: set[str] = set()
 
     def _key(self, session_id: str) -> str:
         return f"{self._settings.sessions_prefix}/{session_id}.json"
+
+    def _image_key(self, digest: str) -> str:
+        return f"{self._settings.sessions_prefix}-images/{digest}"
+
+    def _summary_key(self, session_id: str) -> str:
+        return f"{self._settings.sessions_prefix}-summaries/{session_id}.json"
+
+    def _remember_image(self, digest: str) -> None:
+        if len(self._known_images) >= self._KNOWN_IMAGES_LIMIT:
+            self._known_images.clear()  # only costs some idempotent re-writes
+        self._known_images.add(digest)
 
     async def get(self, session_id: str) -> Session | None:
         if not SAFE_SESSION_ID.match(session_id):
@@ -296,8 +327,19 @@ class ObjectStoreSessionStore:
         if raw is None:
             return None
         try:
-            return Session.from_dict(json.loads(raw.decode("utf-8")))
-        except (json.JSONDecodeError, UnicodeDecodeError, KeyError) as exc:
+            data = json.loads(raw.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            logger.warning("session %s object is corrupt, starting fresh: %s", session_id, exc)
+            return None
+        if not isinstance(data, dict):
+            # Corrupt data, not a storage failure: it mustn't reach
+            # FallbackSessionStore as an exception and demote to memory.
+            logger.warning("session %s object is not a session, starting fresh", session_id)
+            return None
+        await to_thread(self._fill_in_images, data)  # storage errors propagate, as above
+        try:
+            return Session.from_dict(data)
+        except (KeyError, TypeError, ValueError) as exc:
             logger.warning("session %s object is corrupt, starting fresh: %s", session_id, exc)
             return None
 
@@ -306,13 +348,84 @@ class ObjectStoreSessionStore:
 
         session.updated_at = utc_now()
         session.schema_version = SESSION_SCHEMA_VERSION
-        payload = json.dumps(session.to_dict(), ensure_ascii=False).encode("utf-8")
-        await to_thread(
-            self._store.put_bytes,
-            self._key(session.id),
-            payload,
-            content_type="application/json",
+        await to_thread(self._save_sync, session.to_dict(), _summary_of(session))
+
+    def _save_sync(self, data: dict[str, Any], summary: dict[str, Any]) -> None:
+        # Images first, so a stored session never references a missing image.
+        for digest, (blob, mime_type) in self._take_out_images(data).items():
+            if digest not in self._known_images:
+                self._store.put_bytes(self._image_key(digest), blob, content_type=mime_type)
+                self._remember_image(digest)
+        payload = json.dumps(data, ensure_ascii=False).encode("utf-8")
+        self._store.put_bytes(self._key(data["id"]), payload, content_type="application/json")
+        self._put_summary(summary)
+
+    def _put_summary(self, summary: dict[str, Any]) -> None:
+        payload = json.dumps(summary, ensure_ascii=False).encode("utf-8")
+        self._store.put_bytes(
+            self._summary_key(summary["id"]), payload, content_type="application/json"
         )
+
+    @staticmethod
+    def _image_blocks(data: dict[str, Any]) -> list[dict[str, Any]]:
+        """Every image block in a serialized session (they only appear in
+        user messages - see brain.messages.ImageContent)."""
+        blocks: list[dict[str, Any]] = []
+        for message in data.get("messages") or []:
+            if not isinstance(message, dict) or message.get("role") != "user":
+                continue
+            content = message.get("content")
+            if isinstance(content, list):
+                blocks.extend(
+                    b for b in content if isinstance(b, dict) and b.get("type") == "image"
+                )
+        return blocks
+
+    def _take_out_images(self, data: dict[str, Any]) -> dict[str, tuple[bytes, str]]:
+        """Swap each image's base64 for a reference to its bytes, in place,
+        and return the bytes to store by digest."""
+        images: dict[str, tuple[bytes, str]] = {}
+        for block in self._image_blocks(data):
+            encoded = block.get("data")
+            if not isinstance(encoded, str):
+                continue
+            try:
+                blob = base64.b64decode(encoded, validate=True)
+            except (binascii.Error, ValueError):
+                continue  # keep it inline rather than lose it
+            digest = hashlib.sha256(blob).hexdigest()
+            # Serialized by alias (brain.messages.WireModel), so "mimeType".
+            mime_type = block.get("mimeType") or block.get("mime_type")
+            images[digest] = (blob, str(mime_type or "application/octet-stream"))
+            del block["data"]
+            block["ref"] = digest
+        return images
+
+    def _fill_in_images(self, data: dict[str, Any]) -> None:
+        """Put each referenced image's base64 back, in place. A missing image
+        becomes a visible note, so one lost object never loses the session."""
+        for message in data.get("messages") or []:
+            if not isinstance(message, dict) or message.get("role") != "user":
+                continue
+            content = message.get("content")
+            if not isinstance(content, list):
+                continue
+            for i, block in enumerate(content):
+                if not (isinstance(block, dict) and block.get("type") == "image"):
+                    continue
+                digest = block.get("ref")
+                if "data" in block or not isinstance(digest, str):
+                    continue
+                blob = None
+                if _SHA256.match(digest):  # never build a key from anything else
+                    blob = self._store.get_bytes(self._image_key(digest))
+                if blob is None:
+                    logger.warning("session image %r is missing; showing a note instead", digest)
+                    content[i] = {"type": "text", "text": MISSING_IMAGE_NOTE}
+                    continue
+                block["data"] = base64.b64encode(blob).decode("ascii")
+                del block["ref"]
+                self._remember_image(digest)
 
     async def list_recent(self, *, limit: int = 20) -> list[SessionSummary]:
         from asyncio import to_thread
@@ -324,23 +437,24 @@ class ObjectStoreSessionStore:
         # FallbackSessionStore can react to it instead of it being hidden
         # behind an empty-looking session list.
         metas = await to_thread(self._store.list_keys, prefix)
-        metas.sort(
-            key=lambda m: m.last_modified or datetime.min.replace(tzinfo=timezone.utc),
+        sessions = [
+            (meta, sid)
+            for meta in metas
+            if SAFE_SESSION_ID.match(sid := meta.key.removeprefix(prefix).removesuffix(".json"))
+            and meta.key == self._key(sid)
+        ]
+        sessions.sort(
+            key=lambda pair: pair[0].last_modified or datetime.min.replace(tzinfo=timezone.utc),
             reverse=True,
         )
         summaries: list[SessionSummary] = []
-        for meta in metas[:limit]:
-            sid = meta.key.removeprefix(prefix).removesuffix(".json")
-            if not SAFE_SESSION_ID.match(sid):
-                continue
+        for meta, sid in sessions[:limit]:
             title: str | None = None
             message_count = 0
             try:
-                raw = await to_thread(self._store.get_bytes, meta.key)
-                if raw is not None:
-                    session = Session.from_dict(json.loads(raw.decode("utf-8")))
-                    title = session.title
-                    message_count = len(session.ui_chat_messages())
+                summary = await self._read_summary(sid)
+                if summary is not None:
+                    title, message_count = summary
             except Exception:  # noqa: BLE001 — list should still show the id
                 logger.debug("failed to read session summary %s", sid, exc_info=True)
             summaries.append(
@@ -352,6 +466,40 @@ class ObjectStoreSessionStore:
                 )
             )
         return summaries
+
+    async def _read_summary(self, session_id: str) -> tuple[str | None, int] | None:
+        """The stored summary, or, for a session saved before summaries
+        existed, one built from the session and stored for next time."""
+        from asyncio import to_thread
+
+        raw = await to_thread(self._store.get_bytes, self._summary_key(session_id))
+        if raw is not None:
+            try:
+                data = json.loads(raw.decode("utf-8"))
+                return data.get("title"), int(data.get("message_count") or 0)
+            except (ValueError, TypeError, AttributeError):  # bad JSON, encoding or shape
+                logger.warning("session %s summary is corrupt; rebuilding it", session_id)
+        session = await self.get(session_id)
+        if session is None:
+            return None
+        summary = _summary_of(session)
+        try:
+            await to_thread(self._put_summary, summary)
+        except Exception:  # noqa: BLE001 - the list still works; retried next time
+            logger.warning("could not store the summary for session %s", session_id, exc_info=True)
+        return summary["title"], summary["message_count"]
+
+
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+MISSING_IMAGE_NOTE = "(An image was attached here, but its stored copy is missing.)"
+
+
+def _summary_of(session: Session) -> dict[str, Any]:
+    return {
+        "id": session.id,
+        "title": session.title,
+        "message_count": len(session.ui_chat_messages()),
+    }
 
 
 class FallbackSessionStore:
