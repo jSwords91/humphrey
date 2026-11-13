@@ -7,14 +7,16 @@ import json
 import logging
 import re
 import string
+import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Protocol
 
 from app.settings import Settings, get_settings
 from app.storage import ObjectStore, get_object_store
 from brain.messages import (
+    COMPACTION_SUMMARY_PREFIX,
     AgentMessage,
     UserMessage,
     message_from_dict,
@@ -26,7 +28,9 @@ from brain.provider import ModelProvider
 logger = logging.getLogger(__name__)
 
 SAFE_SESSION_ID = re.compile(r"^[a-zA-Z0-9_-]{8,64}$")
-SESSION_SCHEMA_VERSION = 3
+# 4: compactions are stored as records next to the full transcript, which
+#    is no longer rewritten (older sessions load unchanged).
+SESSION_SCHEMA_VERSION = 4
 
 
 def new_session_id() -> str:
@@ -46,9 +50,26 @@ class ChatMessage:
     ts: int | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class Compaction:
+    """One auto-compaction (app/context_window.py), recorded alongside the
+    full transcript instead of replacing it.
+
+    ``first_kept_index`` is where the model's context resumes in
+    ``Session.messages``; ``summary`` stands in for everything before it.
+    ``created_ms`` is when it happened, which is also where the UI shows it.
+    """
+
+    summary: str
+    first_kept_index: int
+    created_ms: int
+
+
 @dataclass(slots=True)
 class Session:
     id: str
+    # The full transcript. Compaction never rewrites it, so the user's
+    # history survives; only model_context() gets shorter.
     messages: list[AgentMessage] = field(default_factory=list)
     created_at: str = field(default_factory=utc_now)
     updated_at: str = field(default_factory=utc_now)
@@ -56,12 +77,52 @@ class Session:
     # Files the agent created or changed (app/artifacts.py), in order, each
     # with created_ms so the UI can place it back in the transcript.
     artifacts: list[dict[str, Any]] = field(default_factory=list)
+    # Oldest first; the model's context is built from the latest.
+    compactions: list[Compaction] = field(default_factory=list)
     schema_version: int = SESSION_SCHEMA_VERSION
 
+    def model_context(self) -> list[AgentMessage]:
+        """What the model sees: the latest summary, then the messages kept after it.
+
+        The summary message carries the compaction's own time, which is later
+        than every message kept after it. app/context_window relies on that to
+        ignore token usage recorded before the compaction.
+        """
+        if not self.compactions:
+            return list(self.messages)
+        latest = self.compactions[-1]
+        summary = UserMessage(
+            content=COMPACTION_SUMMARY_PREFIX + latest.summary, timestamp_ms=latest.created_ms
+        )
+        return [summary, *self.messages[latest.first_kept_index :]]
+
+    def record_compaction(self, summary: str, *, kept_from: int) -> None:
+        """Record a compaction of ``model_context()``, where ``kept_from``
+        indexes that context, as a position in the full transcript."""
+        head = 1 if self.compactions else 0
+        base = self.compactions[-1].first_kept_index if self.compactions else 0
+        if not head <= kept_from <= head + len(self.messages) - base:
+            raise ValueError(f"kept_from {kept_from} is outside the model context")
+        self.compactions.append(
+            Compaction(
+                summary=summary,
+                first_kept_index=base + kept_from - head,
+                created_ms=time.time_ns() // 1_000_000,
+            )
+        )
+
     def ui_chat_messages(self) -> list[ChatMessage]:
+        rows = ui_messages(self.messages)
+        # Each compaction shows where it happened, so rows stay in time
+        # order (the frontend places artefacts by timestamp).
+        for compaction in self.compactions:
+            when = compaction.created_ms
+            at = next((i for i, r in enumerate(rows) if r["ts"] >= when), len(rows))
+            rows.insert(at, {"role": "context_summary", "content": compaction.summary, "ts": when})
+        _order_legacy_summaries(rows)
         return [
             ChatMessage(role=row["role"], content=row["content"], ts=row.get("ts"))
-            for row in ui_messages(self.messages)
+            for row in rows
         ]
 
     def to_dict(self) -> dict[str, Any]:
@@ -73,6 +134,7 @@ class Session:
             "updated_at": self.updated_at,
             "title": self.title,
             "artifacts": self.artifacts,
+            "compactions": [asdict(c) for c in self.compactions],
         }
 
     @classmethod
@@ -117,8 +179,45 @@ class Session:
             updated_at=str(data.get("updated_at") or utc_now()),
             title=data.get("title"),
             artifacts=[a for a in data.get("artifacts") or [] if isinstance(a, dict)],
+            compactions=_load_compactions(data.get("compactions"), len(messages)),
             schema_version=max(version, SESSION_SCHEMA_VERSION),
         )
+
+
+def _load_compactions(raw: object, message_count: int) -> list[Compaction]:
+    """Parse stored compaction records, dropping any that don't fit the
+    transcript. Without a valid record the model just sees more history,
+    which the next turn compacts again, so a bad record costs a summary,
+    never the session."""
+    if not isinstance(raw, list):
+        return []
+    compactions: list[Compaction] = []
+    for item in raw:
+        try:
+            compaction = Compaction(
+                summary=str(item["summary"]),
+                first_kept_index=int(item["first_kept_index"]),
+                created_ms=int(item["created_ms"]),
+            )
+        except (KeyError, TypeError, ValueError):
+            logger.warning("dropping malformed compaction record: %r", item)
+            continue
+        previous = compactions[-1].first_kept_index if compactions else 0
+        if not previous <= compaction.first_kept_index <= message_count:
+            logger.warning("dropping compaction record outside the transcript: %r", item)
+            continue
+        compactions.append(compaction)
+    return compactions
+
+
+def _order_legacy_summaries(rows: list[dict[str, Any]]) -> None:
+    """Sessions compacted before schema 4 stored the summary inline, as the
+    first message, stamped later than the messages kept after it. Pull such
+    a row's time back to just before the next row so artefacts from the
+    kept turns are placed after it, not above it."""
+    for i in range(len(rows) - 2, -1, -1):
+        if rows[i]["role"] == "context_summary" and rows[i]["ts"] > rows[i + 1]["ts"]:
+            rows[i]["ts"] = rows[i + 1]["ts"] - 1
 
 
 @dataclass(slots=True)

@@ -24,7 +24,7 @@ from app.artifacts import (
     resolve_workspace_file,
     scan_workspace,
 )
-from app.context_window import maybe_compact_history
+from app.context_window import compact_if_needed
 from app.image_processing import (
     ImageProcessingFailure,
     ProcessedImage,
@@ -331,10 +331,6 @@ async def agent(body: AgentRequest, request: Request) -> StreamingResponse:
         session = Session(id=session_id)
 
     latest_user = body.message.content
-    history = list(session.messages)
-    if history and isinstance(history[-1], UserMessage) and history[-1].content == latest_user:
-        history = history[:-1]
-
     settings = get_settings()
     model = None
     if body.model and active_provider_kind(settings) == "openai":
@@ -342,19 +338,29 @@ async def agent(body: AgentRequest, request: Request) -> StreamingResponse:
             raise HTTPException(status_code=422, detail=f"Unknown model: {body.model}")
         model = body.model
     provider = get_provider(model)
-    history = await maybe_compact_history(
-        history,
-        provider=provider,
-        system=system_prompt(),
-        tools=TOOLS,
-        context_window_tokens=settings.context_window_tokens,
-    )
 
     try:
         expanded = expand_skill_command(latest_user, load_skills())
     except SkillError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     prompt_text = expanded if expanded is not None else latest_user
+
+    # Every check that can reject the request is above this line: the store
+    # may hand back the live session, so nothing changes it before here.
+    last = session.messages[-1] if session.messages else None
+    if isinstance(last, UserMessage) and last.content == latest_user:
+        session.messages.pop()  # a retried turn: don't store the prompt twice
+    history = session.model_context()
+    compaction = await compact_if_needed(
+        history,
+        provider=provider,
+        system=system_prompt(),
+        tools=TOOLS,
+        context_window_tokens=settings.context_window_tokens,
+    )
+    if compaction is not None:
+        session.record_compaction(compaction.summary, kept_from=compaction.kept_from)
+        history = session.model_context()
 
     image_contents, image_notes = _process_uploaded_images(body.message.images)
     if image_notes:
@@ -400,7 +406,9 @@ async def agent(body: AgentRequest, request: Request) -> StreamingResponse:
                 harness.cancel()
                 harness.append_interrupted_tool_results()
             unregister_active(session_id, harness)
-            session.messages = list(harness.messages)
+            # The harness started from model_context(); append only what this
+            # turn added, so the stored transcript stays complete.
+            session.messages.extend(harness.messages[len(history) :])
             if session.title is None:
                 session.title = await generate_session_title(harness.config.provider, latest_user)
             try:

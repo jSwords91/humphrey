@@ -309,14 +309,25 @@ async def test_session_title_is_not_overwritten_on_later_turns(client: AsyncClie
 async def test_agent_endpoint_auto_compacts_a_large_history(
     client: AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """End-to-end: a pre-existing session with enough history to exceed the
-    (test-forced, tiny) context window must come back compacted after the
-    next turn - a single summary message replacing the old prefix, not the
-    original wall of history.
+    """End-to-end: a session whose history exceeds the (test-forced, tiny)
+    context window is compacted for the model, while the stored transcript
+    and what the user sees keep every message.
     """
+    import app.main
     from brain.messages import AssistantMessage, TextContent, UserMessage
     from app.sessions import Session, get_session_store
     from app.settings import get_settings, reset_settings_for_tests
+    from providers.mock import MockProvider
+
+    seen: list[list] = []  # the context of each agent-loop model call
+
+    class RecordingProvider(MockProvider):
+        def stream(self, messages, tools, *, system, signal=None):
+            if tools:  # the summary and title calls have no tools
+                seen.append(list(messages))
+            return super().stream(messages, tools, system=system, signal=signal)
+
+    monkeypatch.setattr(app.main, "get_provider", lambda model=None: RecordingProvider())
 
     monkeypatch.setenv("MODEL_CONTEXT_WINDOW_TOKENS", "2000")
     reset_settings_for_tests()
@@ -335,7 +346,7 @@ async def test_agent_endpoint_auto_compacts_a_large_history(
 
     session_id = "compactionregression1"
     store = get_session_store()
-    await store.save(Session(id=session_id, messages=big_history))
+    await store.save(Session(id=session_id, messages=list(big_history)))
 
     response = await client.post(
         "/api/agent",
@@ -348,22 +359,45 @@ async def test_agent_endpoint_auto_compacts_a_large_history(
 
     session = await store.get(session_id)
     assert session is not None
-    assert len(session.messages) < len(big_history)
-    first = session.messages[0]
-    assert isinstance(first, UserMessage)
-    assert first.content.startswith("Previous conversation summary:\n")
+    # The transcript is intact: the whole old history, then this turn.
+    assert session.messages[: len(big_history)] == big_history
+    assert session.messages[len(big_history)].text == "one more question"
+    assert len(session.compactions) == 1
 
-    # The UI-facing projection must not disguise the summary as a real user
-    # turn (see frontend/app.js's appendContextSummary) - it's a distinct
-    # role, and the raw prefix is stripped since the frontend supplies its
-    # own label.
+    # The model saw the summary and the kept tail, not the whole history.
+    context = seen[0]
+    assert context[0].text.startswith("Previous conversation summary:\n")
+    assert len(context) < len(big_history)
+    assert context[-1].text == "one more question"
+
+    # The user still sees every turn, with the summary shown where the
+    # compaction happened, and every row in time order.
     stored = await client.get(f"/api/sessions/{session_id}")
     assert stored.status_code == 200
-    ui_messages = stored.json()["messages"]
-    assert ui_messages[0]["role"] == "context_summary"
-    assert not ui_messages[0]["content"].startswith("Previous conversation summary:")
-    assert "user" in [m["role"] for m in ui_messages]
-    assert "assistant" in [m["role"] for m in ui_messages]
+    rows = stored.json()["messages"]
+    user_rows = [m["content"] for m in rows if m["role"] == "user"]
+    assert user_rows[: len(big_history) // 2] == [m.text.strip() for m in big_history[::2]]
+    assert [m["role"] for m in rows].count("context_summary") == 1
+    summary_at = next(i for i, m in enumerate(rows) if m["role"] == "context_summary")
+    assert rows[summary_at + 1]["content"] == "one more question"
+    assert not rows[summary_at]["content"].startswith("Previous conversation summary:")
+    assert [m["ts"] for m in rows] == sorted(m["ts"] for m in rows)
+
+    # A second turn builds on the stored record, and still loses nothing.
+    response = await client.post(
+        "/api/agent",
+        json={"message": {"content": "and another"}, "session_id": session_id},
+    )
+    assert response.status_code == 200
+    session = await store.get(session_id)
+    assert session is not None
+    assert session.messages[: len(big_history)] == big_history
+    assert [m.text for m in session.messages if isinstance(m, UserMessage)][-2:] == [
+        "one more question",
+        "and another",
+    ]
+    assert seen[1][0].text.startswith("Previous conversation summary:\n")
+    assert seen[1][-1].text == "and another"
 
 
 @pytest.mark.asyncio
