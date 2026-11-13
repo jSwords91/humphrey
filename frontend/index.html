@@ -199,6 +199,14 @@
                   <p class="composer-hint" id="composer-hint">
                     <kbd>Enter</kbd> send · <kbd>Shift</kbd>+<kbd>Enter</kbd> newline
                   </p>
+                  <p class="plan-indicator" id="plan-indicator" hidden>
+                    Using ChatGPT plan ·
+                    <a
+                      href="https://chatgpt.com/settings/usage"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >Manage usage</a>
+                  </p>
                   <div class="composer-actions">
                     <input
                       type="file"
@@ -277,6 +285,35 @@
               </button>
             </div>
             <dl class="stats-list" id="stats-list">
+              <div class="stats-row stats-row-access" id="access-row" hidden>
+                <dt>Access</dt>
+                <dd>
+                  <div
+                    class="access-choice"
+                    id="access-choice"
+                    role="radiogroup"
+                    aria-label="How Humphrey reaches the model"
+                    hidden
+                  >
+                    <button type="button" role="radio" data-source="api_key" aria-checked="true">
+                      API key
+                    </button>
+                    <button type="button" role="radio" data-source="chatgpt" aria-checked="false">
+                      ChatGPT plan
+                    </button>
+                  </div>
+                  <button type="button" class="btn-chatgpt" id="chatgpt-sign-in" hidden>
+                    Continue with ChatGPT
+                  </button>
+                  <span class="stats-hint" id="access-hint"></span>
+                  <span class="stats-hint access-warning" id="access-warning" hidden>
+                    This sign-in is saved where Humphrey can't make it private to you (for
+                    example a Windows drive under WSL). Set HUMPHREY_CREDENTIALS_DIR to a
+                    Linux folder; see the README.
+                  </span>
+                  <button type="button" class="link-btn" id="chatgpt-sign-out" hidden>Sign out</button>
+                </dd>
+              </div>
               <div class="stats-row stats-row-model">
                 <dt><label for="model-select">Model</label></dt>
                 <dd>
@@ -287,6 +324,15 @@
                     <i class="ph ph-caret-down" aria-hidden="true"></i>
                   </span>
                   <span class="stats-hint" id="model-hint" hidden></span>
+                </dd>
+              </div>
+              <div class="stats-row stats-row-model" id="effort-row" hidden>
+                <dt><label for="effort-select">Reasoning</label></dt>
+                <dd>
+                  <span class="select-field">
+                    <select id="effort-select" class="model-select"></select>
+                    <i class="ph ph-caret-down" aria-hidden="true"></i>
+                  </span>
                 </dd>
               </div>
               <div class="stats-row">
@@ -319,8 +365,8 @@
                 <dd class="mono" id="stat-tools">0</dd>
               </div>
               <div class="stats-row">
-                <dt>In / Out</dt>
-                <dd class="mono" id="stat-io">0 / 0</dd>
+                <dt>Tokens</dt>
+                <dd class="mono" id="stat-io">0 in · 0 out</dd>
               </div>
             </dl>
           </div>
@@ -330,6 +376,23 @@
     </div>
 
     <dialog class="artifact-viewer" id="artifact-viewer" aria-label="Artefact"></dialog>
+    <dialog class="plan-notice" id="plan-notice" aria-labelledby="plan-notice-title">
+      <h2 id="plan-notice-title">You're using your ChatGPT plan</h2>
+      <p>
+        Messages you send in Humphrey now use your ChatGPT plan instead of an API key, and
+        count towards its usage limits. You can switch back to an API key in Details at any
+        time.
+      </p>
+      <div class="plan-notice-actions">
+        <a
+          class="btn-ghost"
+          href="https://chatgpt.com/settings/usage"
+          target="_blank"
+          rel="noopener noreferrer"
+        >Manage usage</a>
+        <button type="button" class="btn-primary" id="plan-notice-ok">Got it</button>
+      </div>
+    </dialog>
     <div class="toast" id="toast" hidden role="status"></div>
     <div class="visually-hidden" id="sr-announce" aria-live="polite" aria-atomic="true"></div>
 

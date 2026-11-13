@@ -105,3 +105,18 @@ def user_messages_from_wire(rows: list[dict[str, Any]]) -> list[AgentMessage]:
                 AssistantMessage(content=[TextContent(text=content)], stop_reason="stop")
             )
     return messages
+
+
+def chat_completion_usage(usage: Any) -> dict[str, int]:
+    """Token counts from a Chat Completions usage object. ``cached_input`` is
+    the part of ``input`` served from the prompt cache (billed for less), and
+    ``reasoning_output`` the part of ``output`` spent on hidden reasoning."""
+    prompt_details = getattr(usage, "prompt_tokens_details", None)
+    completion_details = getattr(usage, "completion_tokens_details", None)
+    return {
+        "input": int(getattr(usage, "prompt_tokens", 0) or 0),
+        "output": int(getattr(usage, "completion_tokens", 0) or 0),
+        "total_tokens": int(getattr(usage, "total_tokens", 0) or 0),
+        "cached_input": int(getattr(prompt_details, "cached_tokens", 0) or 0),
+        "reasoning_output": int(getattr(completion_details, "reasoning_tokens", 0) or 0),
+    }

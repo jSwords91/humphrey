@@ -62,12 +62,43 @@ def error_from_body(
         body = body["error"]
     message: str | None = None
     code: str | None = None
+    param: str | None = None
     if isinstance(body, Mapping):
         message = _text(body.get("message")) or _text(body.get("detail"))
         code = _text(body.get("code")) or _text(body.get("type"))
+        param = _text(body.get("param"))
+    if code in PLAN_MESSAGES:
+        message = PLAN_MESSAGES[code] + (f" (Unsupported: {param}.)" if param else "")
     return ProviderRequestError(
         message or "The model request failed.", code=code, status=status, request_id=request_id
     )
+
+
+# What a ChatGPT plan's error codes mean for the person using it, per OpenAI's
+# Sign in with ChatGPT docs ("Errors and recovery"). The code is kept on the
+# error, so the app can still act on it (for example, offer to sign in).
+PLAN_MESSAGES = {
+    "subscription_sharing_usage_limit_exceeded": (
+        "You've reached the usage limit for using your ChatGPT plan here. Review your "
+        "plan or this app's limit at https://chatgpt.com/settings/usage."
+    ),
+    "subscription_sharing_usage_unavailable": (
+        "ChatGPT plan usage is unavailable right now. Try again in a little while."
+    ),
+    "subscription_sharing_user_unavailable": (
+        "Your ChatGPT account is unavailable right now. Try again in a little while."
+    ),
+    "subscription_sharing_user_not_eligible": (
+        "This ChatGPT account can't use its plan in other apps. Use an API key instead."
+    ),
+    "subscription_sharing_invalid_user": "Your ChatGPT sign-in is no longer valid. Sign in again.",
+    "subscription_sharing_unsupported_capability": (
+        "Part of this request isn't available with a ChatGPT plan."
+    ),
+    "subscription_sharing_route_not_supported": (
+        "This kind of request isn't available with a ChatGPT plan."
+    ),
+}
 
 
 def from_openai_error(exc: openai.APIError) -> ProviderRequestError:

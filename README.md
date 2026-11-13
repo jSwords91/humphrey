@@ -19,8 +19,8 @@ it inline as an artefact.</sub>
 - Image attachments
 - Rendered Mermaid diagrams
 - Persistent, auto-named sessions with automatic context compaction
-- Runs on OpenAI, with an offline mock that needs no credentials and an
-  optional Azure OpenAI adapter
+- Runs on OpenAI with an API key or your ChatGPT plan, with an offline mock
+  that needs no credentials and an optional Azure OpenAI adapter
 
 ## Screenshots
 
@@ -49,7 +49,7 @@ it inline as an artefact.</sub>
 ## Running locally
 
 ```bash
-cp .env.example .env        # then set OPENAI_API_KEY
+cp .env.example .env        # then set OPENAI_API_KEY, or sign in with ChatGPT later
 uv sync
 uv run uvicorn app.main:app --reload --port 8001
 ```
@@ -70,6 +70,43 @@ Or with Docker:
 ```bash
 docker compose up --build
 ```
+
+## Using your ChatGPT plan
+
+If you pay for ChatGPT, you can use your plan instead of an API key. Open
+Details, choose **Continue with ChatGPT**, sign in on OpenAI's page, then pick
+**ChatGPT plan** under Access. Switching back to the API key is one click,
+and the API key stays the default until you choose otherwise.
+
+This uses OpenAI's own [Sign in with ChatGPT](https://developers.openai.com/siwc/token-sharing-open-source)
+for open-source apps, which is currently a preview. Humphrey registers as
+its own app, the first time you sign in, and talks to the normal
+`api.openai.com/v1/responses` endpoint. It doesn't borrow the Codex CLI's
+sign-in.
+
+A few things worth knowing:
+
+- Your plan's limits apply. On Plus there's a five-hour usage window shared
+  with every other app using your plan, and you can set a limit for Humphrey
+  itself at [chatgpt.com/settings/usage](https://chatgpt.com/settings/usage).
+  Session titles and context summaries count too, as they're model calls.
+- The model picker shows the models your account offers, not `OPENAI_MODELS`.
+- Tokens stay on your machine, in `data/credentials/chatgpt.json` (or
+  `HUMPHREY_CREDENTIALS_DIR`). They never go into session storage, the
+  browser or the logs, and git and Docker both ignore that folder. Humphrey
+  makes the file readable only by you, but some filesystems ignore that: on
+  a Windows drive under WSL (`/mnt/c/...`) every file is readable by everyone
+  in WSL. Details warns you when that's the case; point
+  `HUMPHREY_CREDENTIALS_DIR` at a Linux folder, such as
+  `~/.humphrey/credentials`, to fix it.
+- **Sign out** revokes the sign-in at OpenAI. You can also disconnect
+  Humphrey in ChatGPT's settings. Either way, you'll need to sign in again
+  to use your plan.
+- It's meant for running Humphrey yourself. OpenAI asks paid or hosted apps
+  to apply separately, so don't offer this to other people from a server.
+- The sign-in comes back to `http://127.0.0.1:<port>`, so open Humphrey in a
+  browser on the same machine. That works with the Docker setup too. For a
+  remote machine, sign in locally and copy the credentials file across.
 
 ## Layout
 

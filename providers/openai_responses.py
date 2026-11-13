@@ -297,10 +297,20 @@ class ResponsesStreamParser:
         usage = response.get("usage")
         if not isinstance(usage, Mapping):
             return None
+        input_details = usage.get("input_tokens_details")
+        output_details = usage.get("output_tokens_details")
         return {
             "input": int(usage.get("input_tokens") or 0),
             "output": int(usage.get("output_tokens") or 0),
             "total_tokens": int(usage.get("total_tokens") or 0),
+            # Parts of the above: input served from the prompt cache (billed
+            # for less), and output spent on reasoning the user never sees.
+            "cached_input": int((input_details or {}).get("cached_tokens") or 0)
+            if isinstance(input_details, Mapping)
+            else 0,
+            "reasoning_output": int((output_details or {}).get("reasoning_tokens") or 0)
+            if isinstance(output_details, Mapping)
+            else 0,
         }
 
 

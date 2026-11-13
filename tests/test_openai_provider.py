@@ -220,7 +220,7 @@ async def test_openai_stream_maps_text_and_usage(monkeypatch: pytest.MonkeyPatch
         ]
     )
     provider_module._client.cache_clear()
-    monkeypatch.setattr(provider_module, "_client", lambda api_key: fake_client)
+    monkeypatch.setattr(provider_module, "_client", lambda api_key, max_retries=2: fake_client)
 
     provider = OpenAIProvider(get_settings())
     chunks = [
@@ -231,7 +231,9 @@ async def test_openai_stream_maps_text_and_usage(monkeypatch: pytest.MonkeyPatch
     ]
 
     assert chunks[0].content == "hello"
-    assert chunks[1].usage == {"input": 3, "output": 5, "total_tokens": 8}
+    assert chunks[1].usage == {
+        "input": 3, "output": 5, "total_tokens": 8, "cached_input": 0, "reasoning_output": 0
+    }
     assert fake_client.chat.completions.received_kwargs["model"] == "gpt-4o-mini"
 
 
@@ -266,7 +268,7 @@ async def test_openai_stream_maps_tool_calls(monkeypatch: pytest.MonkeyPatch) ->
         ]
     )
     provider_module._client.cache_clear()
-    monkeypatch.setattr(provider_module, "_client", lambda api_key: fake_client)
+    monkeypatch.setattr(provider_module, "_client", lambda api_key, max_retries=2: fake_client)
 
     provider = OpenAIProvider(get_settings())
     chunks = [
@@ -352,7 +354,7 @@ async def test_openai_uses_responses_api_for_reasoning_model(
         ]
     )
     provider_module._client.cache_clear()
-    monkeypatch.setattr(provider_module, "_client", lambda api_key: fake_client)
+    monkeypatch.setattr(provider_module, "_client", lambda api_key, max_retries=2: fake_client)
 
     provider = OpenAIProvider(get_settings())
     chunks = [
@@ -364,7 +366,9 @@ async def test_openai_uses_responses_api_for_reasoning_model(
 
     assert chunks[0].thinking == "considering..."
     assert chunks[1].content == "the answer"
-    assert chunks[2].usage == {"input": 5, "output": 7, "total_tokens": 12}
+    assert chunks[2].usage == {
+        "input": 5, "output": 7, "total_tokens": 12, "cached_input": 0, "reasoning_output": 0
+    }
     assert fake_client.responses.received_kwargs["model"] == "gpt-5.6-sol"
     assert fake_client.responses.received_kwargs["input"] == [{"role": "user", "content": "hi"}]
 
@@ -442,15 +446,20 @@ async def test_models_endpoint_lists_openai_models(monkeypatch: pytest.MonkeyPat
         body = (await client.get("/api/models")).json()
         rejected = await client.post(
             "/api/agent",
-            json={"model": "gpt-z", "messages": [{"role": "user", "content": "hi"}]},
+            json={"model": "gpt-z", "message": {"content": "hi"}},
         )
     assert body == {
         "provider": "openai",
         "selectable": True,
         "default": "gpt-a",
         "models": ["gpt-a", "gpt-b", "gpt-c"],
+        "labels": {},
+        # Chat Completions models: no reasoning effort to choose.
+        "efforts": {"gpt-a": [], "gpt-b": [], "gpt-c": []},
+        "default_effort": "medium",
     }
     assert rejected.status_code == 422
+    assert rejected.json()["detail"] == "Unknown model: gpt-z"  # not just a malformed body
 
 
 async def test_models_endpoint_reports_mock_as_fixed() -> None:
@@ -460,4 +469,29 @@ async def test_models_endpoint_reports_mock_as_fixed() -> None:
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         body = (await client.get("/api/models")).json()
-    assert body == {"provider": "mock", "selectable": False, "default": "mock", "models": ["mock"]}
+    assert body == {
+        "provider": "mock",
+        "selectable": False,
+        "default": "mock",
+        "models": ["mock"],
+        "labels": {},
+        "efforts": {},
+        "default_effort": None,
+    }
+
+
+def test_chat_completion_usage_keeps_the_cached_and_reasoning_parts() -> None:
+    from types import SimpleNamespace
+
+    from providers.openai_adapter import chat_completion_usage
+
+    usage = SimpleNamespace(
+        prompt_tokens=100,
+        completion_tokens=40,
+        total_tokens=140,
+        prompt_tokens_details=SimpleNamespace(cached_tokens=64),
+        completion_tokens_details=SimpleNamespace(reasoning_tokens=25),
+    )
+    assert chat_completion_usage(usage) == {
+        "input": 100, "output": 40, "total_tokens": 140, "cached_input": 64, "reasoning_output": 25
+    }

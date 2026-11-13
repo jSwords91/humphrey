@@ -1,6 +1,8 @@
 (() => {
   const SESSION_KEY = "humphrey.sessionId";
-  const CONTEXT_BUDGET = 128_000;
+  // Replaced from /healthz: the budget auto-compaction works to, so the
+  // context bar measures against the same number as the server.
+  let contextBudget = 128_000;
 
   const stage = document.getElementById("stage");
   const thread = document.getElementById("thread");
@@ -69,10 +71,15 @@
   let toolsUsed = 0;
   let charsIn = 0;
   let charsOut = 0;
-  /** @type {number} */
+  // This chat's usage, every model call added up (a turn that uses tools is
+  // several calls). cachedIn is part of tokensIn, reasoningOut of tokensOut.
   let tokensIn = 0;
-  /** @type {number} */
   let tokensOut = 0;
+  let cachedIn = 0;
+  let reasoningOut = 0;
+  // The latest call alone: its input already holds the whole conversation,
+  // so input + output is how full the context is now.
+  let contextTokens = 0;
   /** @type {Map<string, any>} */
   let liveTools = new Map();
   /** @type {number | null} */
@@ -284,6 +291,56 @@
   /** @type {string | null} null = the provider decides (mock, Azure) */
   let selectedModel = null;
 
+  // Reasoning effort: a standing preference like the model, but checked
+  // against what the chosen model offers each time it changes.
+  const EFFORT_KEY = "humphrey.effort";
+  const EFFORT_LABELS = { low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Max" };
+  const effortRow = document.getElementById("effort-row");
+  const effortSelect = /** @type {HTMLSelectElement | null} */ (document.getElementById("effort-select"));
+  /** @type {string | null} null = the server's default (REASONING_EFFORT) */
+  let selectedEffort = null;
+  /** @type {{ efforts?: Record<string, string[]>, default_effort?: string | null, default: string } | null} */
+  let modelsInfo = null;
+
+  function renderEffortPicker() {
+    if (!effortRow || !effortSelect || !modelsInfo) {
+      return;
+    }
+    const model = selectedModel || modelsInfo.default;
+    const levels = (modelsInfo.efforts && modelsInfo.efforts[model]) || [];
+    effortRow.hidden = levels.length === 0;
+    if (levels.length === 0) {
+      selectedEffort = null;
+      return;
+    }
+    const fallback = modelsInfo.default_effort && levels.includes(modelsInfo.default_effort)
+      ? modelsInfo.default_effort
+      : levels[0];
+    const stored = readStored(EFFORT_KEY);
+    selectedEffort = stored && levels.includes(stored) ? stored : fallback;
+    effortSelect.replaceChildren(
+      ...levels.map((level) => {
+        const option = document.createElement("option");
+        option.value = level;
+        const name = EFFORT_LABELS[level] || level;
+        option.textContent = level === modelsInfo.default_effort ? `${name} · default` : name;
+        return option;
+      }),
+    );
+    effortSelect.value = selectedEffort;
+  }
+
+  effortSelect?.addEventListener("change", () => {
+    selectedEffort = effortSelect.value;
+    writeStored(EFFORT_KEY, selectedEffort);
+    const name = EFFORT_LABELS[selectedEffort] || selectedEffort;
+    showToast(
+      stage.dataset.running === "1"
+        ? `Reasoning set to ${name} from your next message`
+        : `Reasoning set to ${name}`,
+    );
+  });
+
   function readStored(key) {
     try {
       return localStorage.getItem(key);
@@ -300,7 +357,8 @@
     }
   }
 
-  /** @param {{ provider: string, selectable: boolean, default: string, models: string[] }} info */
+  /** @param {{ provider: string, selectable: boolean, default: string, models: string[],
+   *   labels?: Record<string, string> }} info */
   function renderModelPicker(info) {
     if (!modelSelect) {
       return;
@@ -312,12 +370,16 @@
       ...models.map((m) => {
         const option = document.createElement("option");
         option.value = m;
-        option.textContent = m === info.default && info.selectable && models.length > 1 ? `${m} · default` : m;
+        const name = (info.labels && info.labels[m]) || m;
+        option.textContent =
+          m === info.default && info.selectable && models.length > 1 ? `${name} · default` : name;
         return option;
       }),
     );
     modelSelect.value = selectedModel || info.default;
     modelSelect.disabled = !info.selectable || models.length < 2;
+    modelsInfo = info;
+    renderEffortPicker();
     modelSelect.title = modelSelect.value;
     if (modelHint) {
       const hints = {
@@ -325,7 +387,10 @@
         azure_openai: "Set by the Azure deployment.",
         unconfigured: "Set OPENAI_API_KEY in .env.",
       };
-      const hint = info.selectable
+      // The plan's list comes from the account, so OPENAI_MODELS doesn't apply.
+      const hint = info.provider === "chatgpt"
+        ? ""
+        : info.selectable
         ? models.length < 2
           ? "Add more with OPENAI_MODELS in .env."
           : ""
@@ -350,11 +415,186 @@
     selectedModel = modelSelect.value;
     modelSelect.title = selectedModel;
     writeStored(MODEL_KEY, selectedModel);
+    renderEffortPicker(); // the new model may offer different levels
     showToast(
       stage.dataset.running === "1"
         ? `Switched to ${selectedModel} from your next message`
         : `Switched to ${selectedModel}`,
     );
+  });
+
+  // ── Model access: API key or ChatGPT plan ────────────────
+  // Signing in happens on OpenAI's site in another tab; this tab learns the
+  // result from /api/auth/status. Tokens stay on the server: nothing here
+  // ever sees one.
+  const MANAGE_USAGE_URL = "https://chatgpt.com/settings/usage";
+  const accessRow = document.getElementById("access-row");
+  const accessChoice = document.getElementById("access-choice");
+  const accessHint = document.getElementById("access-hint");
+  const accessWarning = document.getElementById("access-warning");
+  const signInBtn = document.getElementById("chatgpt-sign-in");
+  const signOutBtn = document.getElementById("chatgpt-sign-out");
+  const planIndicator = document.getElementById("plan-indicator");
+  const planNotice = /** @type {HTMLDialogElement | null} */ (document.getElementById("plan-notice"));
+  /** @type {number | null} */
+  let signInPoll = null;
+
+  /** POST JSON: the server refuses anything else, so no other site can trigger these. */
+  async function postJson(path, body = {}) {
+    const res = await fetch(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(typeof data.detail === "string" ? data.detail : `HTTP ${res.status}`);
+    }
+    return data;
+  }
+
+  /**
+   * @param {{ signed_in: boolean, email: string | null, active_source: string,
+   *   using_plan: boolean, plan_notice_seen: boolean, credentials_private: boolean }} status
+   * @param {string} provider the current source from /healthz
+   */
+  function renderAccess(status, provider) {
+    if (!accessRow) {
+      return;
+    }
+    // The offline mock answers everything, so a sign-in would do nothing.
+    accessRow.hidden = provider === "mock";
+    if (signInBtn) {
+      signInBtn.hidden = status.signed_in;
+    }
+    if (accessChoice) {
+      accessChoice.hidden = !status.signed_in;
+      for (const button of accessChoice.querySelectorAll("button")) {
+        button.setAttribute("aria-checked", String(button.dataset.source === status.active_source));
+      }
+    }
+    if (signOutBtn) {
+      signOutBtn.hidden = !status.signed_in;
+    }
+    if (accessHint) {
+      accessHint.textContent = status.signed_in
+        ? `Signed in as ${status.email || "your ChatGPT account"}`
+        : "Use your ChatGPT plan instead of an API key.";
+    }
+    if (accessWarning) {
+      accessWarning.hidden = !(status.signed_in && status.credentials_private === false);
+    }
+    if (planIndicator) {
+      planIndicator.hidden = !status.using_plan;
+    }
+    if (status.using_plan && !status.plan_notice_seen && planNotice && !planNotice.open) {
+      planNotice.showModal();
+    }
+  }
+
+  async function loadAuth(provider) {
+    try {
+      const res = await fetch("/api/auth/status");
+      if (res.ok) {
+        renderAccess(await res.json(), provider);
+      }
+    } catch {
+      /* the next probe retries */
+    }
+  }
+
+  /** Re-read everything the source affects: access, models, provider label. */
+  async function refreshAccess() {
+    await probeHealth();
+  }
+
+  function stopSignInPoll() {
+    if (signInPoll !== null) {
+      clearInterval(signInPoll);
+      signInPoll = null;
+    }
+    if (signInBtn) {
+      signInBtn.disabled = false;
+      signInBtn.textContent = "Continue with ChatGPT";
+    }
+  }
+
+  signInBtn?.addEventListener("click", async () => {
+    stopSignInPoll(); // a second click replaces any sign-in still waiting
+    // Open the tab now, inside the click, or a popup blocker stops it; it's
+    // pointed at OpenAI once the server has made the sign-in URL. Cutting
+    // opener keeps OpenAI's pages from reaching back into this window.
+    const tab = window.open("about:blank", "_blank");
+    if (tab) {
+      tab.opener = null;
+    }
+    signInBtn.disabled = true;
+    signInBtn.textContent = "Waiting for ChatGPT…";
+    let url;
+    try {
+      ({ url } = await postJson("/api/auth/chatgpt/start"));
+    } catch (err) {
+      tab?.close();
+      stopSignInPoll();
+      showToast(`Couldn't start sign-in: ${err instanceof Error ? err.message : err}`);
+      return;
+    }
+    if (tab) {
+      tab.location.href = url;
+    } else {
+      window.location.href = url; // no new tab allowed: sign in here, then come back
+      return;
+    }
+    const startedAt = Date.now();
+    signInPoll = window.setInterval(async () => {
+      if (Date.now() - startedAt > 10 * 60 * 1000) {
+        stopSignInPoll();
+        return;
+      }
+      try {
+        const status = await (await fetch("/api/auth/status")).json();
+        if (status.signed_in) {
+          stopSignInPoll();
+          showToast(`Signed in as ${status.email || "your ChatGPT account"}`);
+          await refreshAccess();
+        }
+      } catch {
+        /* keep waiting */
+      }
+    }, 2000);
+  });
+
+  accessChoice?.addEventListener("click", async (event) => {
+    const button = event.target instanceof Element ? event.target.closest("button[data-source]") : null;
+    if (!(button instanceof HTMLButtonElement) || button.getAttribute("aria-checked") === "true") {
+      return;
+    }
+    try {
+      await postJson("/api/auth/source", { source: button.dataset.source });
+      showToast(button.dataset.source === "chatgpt" ? "Using your ChatGPT plan" : "Using your API key");
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : String(err));
+    }
+    await refreshAccess();
+  });
+
+  signOutBtn?.addEventListener("click", async () => {
+    try {
+      await postJson("/api/auth/chatgpt/sign-out");
+      showToast("Signed out of ChatGPT");
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : String(err));
+    }
+    await refreshAccess();
+  });
+
+  document.getElementById("plan-notice-ok")?.addEventListener("click", async () => {
+    planNotice?.close();
+    try {
+      await postJson("/api/auth/chatgpt/plan-notice-seen");
+    } catch {
+      /* it shows again next time; harmless */
+    }
   });
 
   // ── Theme ────────────────────────────────────────────────
@@ -1328,12 +1568,22 @@
     });
   }
 
+  function resetUsage() {
+    tokensIn = 0;
+    tokensOut = 0;
+    cachedIn = 0;
+    reasoningOut = 0;
+    contextTokens = 0;
+  }
+
   function updateStats() {
     const turns = messages.filter((m) => m.role === "user").length;
-    const approxIn = tokensIn || Math.round(charsIn / 4);
-    const approxOut = tokensOut || Math.round(charsOut / 4);
-    const approxTokens = approxIn + approxOut;
-    const pct = Math.min(100, Math.round((approxTokens / CONTEXT_BUDGET) * 100));
+    // Without any reported usage (nothing sent yet), estimate from text.
+    const reported = tokensIn > 0 || tokensOut > 0;
+    const shownIn = reported ? tokensIn : Math.round(charsIn / 4);
+    const shownOut = reported ? tokensOut : Math.round(charsOut / 4);
+    const inContext = contextTokens || (reported ? 0 : shownIn + shownOut);
+    const pct = Math.min(100, Math.round((inContext / contextBudget) * 100));
 
     if (statTurns) {
       statTurns.textContent = String(turns);
@@ -1342,7 +1592,15 @@
       statTools.textContent = String(toolsUsed);
     }
     if (statIo) {
-      statIo.textContent = `${compactNum(approxIn)} / ${compactNum(approxOut)}`;
+      statIo.textContent = `${compactNum(shownIn)} in · ${compactNum(shownOut)} out`;
+      statIo.title = reported
+        ? `This chat so far, all model calls: ${tokensIn.toLocaleString()} in ` +
+          `(${cachedIn.toLocaleString()} from cache), ${tokensOut.toLocaleString()} out ` +
+          `(${reasoningOut.toLocaleString()} reasoning)`
+        : "Estimated from the text; no model usage reported yet";
+    }
+    if (statContext) {
+      statContext.title = `${inContext.toLocaleString()} of ${contextBudget.toLocaleString()} tokens`;
     }
     if (statContext) {
       statContext.textContent = `${pct}%`;
@@ -1638,7 +1896,17 @@
   function showError(text) {
     pinnedToBottom = true;
     updateLatestButton();
-    appendMessage("error", text);
+    const el = appendMessage("error", text);
+    // A ChatGPT plan's usage limit: where to go next is the main action.
+    if (el && text.includes(MANAGE_USAGE_URL)) {
+      const link = document.createElement("a");
+      link.className = "btn-primary error-action";
+      link.href = MANAGE_USAGE_URL;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.textContent = "Manage usage";
+      el.append(link);
+    }
     announce(`Error: ${text}`);
   }
 
@@ -2186,8 +2454,7 @@
     toolsUsed = 0;
     charsIn = 0;
     charsOut = 0;
-    tokensIn = 0;
-    tokensOut = 0;
+    resetUsage();
     clearTranscript();
     setActive(false);
     setRunning(false);
@@ -2293,21 +2560,18 @@
       toolsUsed = 0;
       charsIn = 0;
       charsOut = 0;
-      // Real usage isn't attached to individual messages in this response
-      // (only the last assistant turn's cumulative usage is), so seed the
-      // real counters from that and let the per-message loop below only
-      // fill in the char-based fallback for sessions with no usage yet
-      // (e.g. mock mode, or a session with no assistant reply).
-      tokensIn = 0;
-      tokensOut = 0;
+      // The server adds up every model call in the chat (usage_totals); the
+      // latest call alone (last_usage) says how full the context is. The
+      // loop below only fills the text-based estimate for chats with no
+      // usage yet.
+      resetUsage();
+      const totals = data.usage_totals || {};
+      tokensIn = Number(totals.input) || 0;
+      tokensOut = Number(totals.output) || 0;
+      cachedIn = Number(totals.cached_input) || 0;
+      reasoningOut = Number(totals.reasoning_output) || 0;
       if (data.last_usage && typeof data.last_usage === "object") {
-        const u = data.last_usage;
-        if (typeof u.input === "number") {
-          tokensIn = u.input;
-        }
-        if (typeof u.output === "number") {
-          tokensOut = u.output;
-        }
+        contextTokens = (Number(data.last_usage.input) || 0) + (Number(data.last_usage.output) || 0);
       }
       setToolStat("—");
       /** @type {{ ts: number, el: Element }[]} */
@@ -2371,8 +2635,12 @@
         throw new Error("health failed");
       }
       const data = await res.json();
+      if (Number(data.context_window_tokens) > 0) {
+        contextBudget = Number(data.context_window_tokens);
+      }
       const providerLabels = {
         mock: "mock",
+        chatgpt: "ChatGPT plan",
         openai: "OpenAI",
         azure_openai: "Azure OpenAI",
         unconfigured: "unconfigured",
@@ -2384,6 +2652,7 @@
             ? "mock"
             : "azure";
       await loadModels();
+      await loadAuth(typeof data.provider === "string" ? data.provider : "");
       if (statProvider) {
         statProvider.textContent = provider;
       }
@@ -2527,17 +2796,16 @@
 
     if (type === "message_end") {
       if (event.usage && typeof event.usage === "object") {
-        // Each turn's usage.input is already a cumulative count (the whole
-        // transcript is resent every call), so the latest turn's numbers ARE
-        // the current context-window occupancy - replace, don't accumulate,
-        // or multi-turn conversations wildly over-report their own size.
+        // One model call. The chat's totals add every call up; the context
+        // is this call alone, since its input already holds the whole
+        // conversation (adding those up would count it again each call).
         const u = event.usage;
-        if (typeof u.input === "number") {
-          tokensIn = u.input;
-        }
-        if (typeof u.output === "number") {
-          tokensOut = u.output;
-        }
+        tokensIn += Number(u.input) || 0;
+        tokensOut += Number(u.output) || 0;
+        cachedIn += Number(u.cached_input) || 0;
+        reasoningOut += Number(u.reasoning_output) || 0;
+        contextTokens = (Number(u.input) || 0) + (Number(u.output) || 0);
+        updateStats();
       }
       if (state.assistantEl) {
         state.assistantEl.classList.remove("is-streaming");
@@ -2828,6 +3096,7 @@
           },
           session_id: sessionId,
           ...(selectedModel ? { model: selectedModel } : {}),
+          ...(selectedEffort ? { reasoning_effort: selectedEffort } : {}),
         }),
         signal: controller.signal,
       });

@@ -1,17 +1,22 @@
-"""OpenAI provider (API key): Humphrey's primary model provider."""
+"""OpenAI provider: Humphrey's primary model provider.
+
+Authenticates with an API key by default, or with any credential source,
+such as a ChatGPT plan sign-in's access token (see app/auth). The provider
+only knows how a request is authenticated, never how a credential is
+obtained or refreshed: it asks for a fresh one on every request.
+"""
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from functools import lru_cache
 
-import openai
 from openai import AsyncOpenAI
 
 from brain.cancel import CancellationToken
 from brain.messages import AgentMessage
-from providers.openai_adapter import messages_to_openai, tools_to_openai
-from providers.errors import from_openai_error
+from providers.openai_adapter import chat_completion_usage, messages_to_openai, tools_to_openai
+from providers.retry import stream_with_retries
 from providers.openai_responses import (
     ResponsesStreamParser,
     build_responses_payload,
@@ -23,9 +28,13 @@ from app.settings import Settings, get_settings
 from brain.tools import AgentTool
 
 
-@lru_cache(maxsize=1)
-def _client(api_key: str) -> AsyncOpenAI:
-    return AsyncOpenAI(api_key=api_key)
+# Returns the credential to send as the bearer token, fresh for each request.
+CredentialSource = Callable[[], Awaitable[str]]
+
+
+@lru_cache(maxsize=2)
+def _client(api_key: str, max_retries: int = 2) -> AsyncOpenAI:
+    return AsyncOpenAI(api_key=api_key, max_retries=max_retries)
 
 
 class OpenAIProvider:
@@ -36,12 +45,36 @@ class OpenAIProvider:
     can sit behind the harness.
     """
 
-    def __init__(self, settings: Settings | None = None, model: str | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings | None = None,
+        model: str | None = None,
+        *,
+        credential: CredentialSource | None = None,
+        responses_only: bool = False,
+        reasoning_effort: str | None = None,
+    ) -> None:
+        """``reasoning_effort`` overrides REASONING_EFFORT for this provider's
+        requests (the caller checks the model accepts it).
+        ``credential`` replaces the API key, e.g. a ChatGPT plan token.
+        ``responses_only`` sends every model through the Responses API, for
+        routes that refuse Chat Completions (the ChatGPT plan does). Such a
+        route also leaves retries to this provider: the SDK's own retries
+        would repeat a usage-limit failure for nothing."""
         self._settings = settings or get_settings()
-        if not self._settings.openai_api_configured:
-            raise RuntimeError(
-                "OPENAI_API_KEY must be set. For offline work set HUMPHREY_MOCK=1."
-            )
+        if credential is None:
+            if not self._settings.openai_api_configured:
+                raise RuntimeError(
+                    "OPENAI_API_KEY must be set. For offline work set HUMPHREY_MOCK=1."
+                )
+            api_key = self._settings.openai_api_key
+
+            async def credential() -> str:
+                return api_key
+
+        self._credential = credential
+        self._responses_only = responses_only
+        self._reasoning_effort = reasoning_effort or self._settings.reasoning_effort
         self._model = model or self._settings.openai_model
 
     @property
@@ -56,11 +89,12 @@ class OpenAIProvider:
         system: str,
         signal: CancellationToken | None = None,
     ) -> AsyncIterator[ModelChunk]:
-        try:
-            async for chunk in self._stream(messages, tools, system=system, signal=signal):
-                yield chunk
-        except openai.APIError as exc:
-            raise from_openai_error(exc) from exc
+        async for chunk in stream_with_retries(
+            lambda: self._stream(messages, tools, system=system, signal=signal),
+            signal=signal,
+            retry_http=self._responses_only,
+        ):
+            yield chunk
 
     async def _stream(
         self,
@@ -70,8 +104,8 @@ class OpenAIProvider:
         system: str,
         signal: CancellationToken | None = None,
     ) -> AsyncIterator[ModelChunk]:
-        client = _client(self._settings.openai_api_key)
-        if uses_responses_api(self._model):
+        client = _client(await self._credential(), 0 if self._responses_only else 2)
+        if self._responses_only or uses_responses_api(self._model):
             async for chunk in self._stream_responses(client, messages, tools, system, signal):
                 yield chunk
             return
@@ -91,13 +125,7 @@ class OpenAIProvider:
                 break
             if getattr(chunk, "usage", None) is not None:
                 usage = chunk.usage
-                yield ModelChunk(
-                    usage={
-                        "input": int(getattr(usage, "prompt_tokens", 0) or 0),
-                        "output": int(getattr(usage, "completion_tokens", 0) or 0),
-                        "total_tokens": int(getattr(usage, "total_tokens", 0) or 0),
-                    }
-                )
+                yield ModelChunk(usage=chat_completion_usage(usage))
             if not chunk.choices:
                 continue
             delta = chunk.choices[0].delta
@@ -128,7 +156,7 @@ class OpenAIProvider:
             system=system,
             messages=messages,
             tools=tools,
-            reasoning_effort=self._settings.reasoning_effort,
+            reasoning_effort=self._reasoning_effort,
         )
         stream = await client.responses.create(**payload)
         async for chunk in read_responses_stream(stream, ResponsesStreamParser(), signal):

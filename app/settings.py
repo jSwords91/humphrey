@@ -47,6 +47,7 @@ class Settings:
     storage_backend: StorageBackend
     local_storage_dir: str
     workspace_dir: str
+    credentials_dir: str
     context_window_tokens: int
 
     @property
@@ -100,6 +101,12 @@ def get_settings() -> Settings:
         # root, so the agent can't rewrite the app it is running in.
         workspace_dir=os.environ.get("HUMPHREY_WORKSPACE", "").strip()
         or str(Path(__file__).resolve().parent.parent / "workspace"),
+        # ChatGPT sign-in tokens (app/auth). Local disk only, never session
+        # storage, so they can't end up in Azure Blob. The default sits under
+        # data/, which .gitignore and .dockerignore both exclude, and which
+        # Docker mounts, so a sign-in survives a restart.
+        credentials_dir=os.environ.get("HUMPHREY_CREDENTIALS_DIR", "").strip()
+        or str(Path(__file__).resolve().parent.parent / "data" / "credentials"),
         # One configured constant rather than tau's per-model catalog lookup
         # (RuntimeModelCatalog) - deliberately simpler, see context_window.py's
         # module docstring. 128k covers every model this app currently uses.

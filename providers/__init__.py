@@ -33,9 +33,10 @@ __all__ = [
 ]
 
 
-def get_provider(model: str | None = None) -> ModelProvider:
-    """``model`` overrides the default OpenAI model; callers validate it
-    against ``Settings.selectable_models``. Other providers ignore it."""
+def get_provider(model: str | None = None, *, reasoning_effort: str | None = None) -> ModelProvider:
+    """``model`` overrides the default OpenAI model, and ``reasoning_effort``
+    REASONING_EFFORT; callers check both are on offer. Other providers
+    ignore them."""
     settings = get_settings()
     kind = active_provider_kind(settings)
     if kind == "mock":
@@ -45,7 +46,7 @@ def get_provider(model: str | None = None) -> ModelProvider:
     if kind == "openai":
         from providers.openai_provider import OpenAIProvider
 
-        return OpenAIProvider(settings, model=model)
+        return OpenAIProvider(settings, model=model, reasoning_effort=reasoning_effort)
     try:
         from providers.azure import AzureOpenAIProvider
     except ImportError as exc:

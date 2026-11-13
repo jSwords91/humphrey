@@ -211,12 +211,24 @@ def test_parser_completed_extracts_usage_and_reasoning_signature() -> None:
         {
             "type": "response.completed",
             "response": {
-                "usage": {"input_tokens": 10, "output_tokens": 20, "total_tokens": 30},
+                "usage": {
+                    "input_tokens": 10,
+                    "output_tokens": 20,
+                    "total_tokens": 30,
+                    "input_tokens_details": {"cached_tokens": 4},
+                    "output_tokens_details": {"reasoning_tokens": 12},
+                },
             },
         }
     )
     assert chunk is not None
-    assert chunk.usage == {"input": 10, "output": 20, "total_tokens": 30}
+    assert chunk.usage == {
+        "input": 10,
+        "output": 20,
+        "total_tokens": 30,
+        "cached_input": 4,  # part of input, from the prompt cache
+        "reasoning_output": 12,  # part of output, spent reasoning
+    }
     signature = json.loads(chunk.thinking_signature)
     assert signature["id"] == "rs_1"
 

@@ -63,7 +63,8 @@ def test_an_error_raised_mid_stream_keeps_its_code() -> None:
     )
     error = from_openai_error(exc)
     assert error.code == "subscription_sharing_usage_limit_exceeded"
-    assert error.message == "You've reached this app's usage limit."
+    # Plan codes get text a person can act on, with where to go next.
+    assert "https://chatgpt.com/settings/usage" in error.message
 
 
 def test_a_connection_failure_says_so() -> None:
@@ -192,7 +193,7 @@ async def test_the_user_sees_the_reason_not_an_sdk_repr(monkeypatch: pytest.Monk
     monkeypatch.setenv("HUMPHREY_MOCK", "0")
     reset_settings_for_tests()
     exc = _status_error(openai.BadRequestError, 400, {"detail": "Store must be set to false"})
-    monkeypatch.setattr(provider_module, "_client", lambda api_key: _FailingClient(exc))
+    monkeypatch.setattr(provider_module, "_client", lambda api_key, max_retries=2: _FailingClient(exc))
 
     harness = AgentHarness(
         AgentHarnessConfig(provider=provider_module.OpenAIProvider(get_settings()), system="s")
