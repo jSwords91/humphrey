@@ -300,7 +300,8 @@
     }
   }
 
-  /** @param {{ provider: string, selectable: boolean, default: string, models: string[] }} info */
+  /** @param {{ provider: string, selectable: boolean, default: string, models: string[],
+   *   labels?: Record<string, string> }} info */
   function renderModelPicker(info) {
     if (!modelSelect) {
       return;
@@ -312,7 +313,9 @@
       ...models.map((m) => {
         const option = document.createElement("option");
         option.value = m;
-        option.textContent = m === info.default && info.selectable && models.length > 1 ? `${m} · default` : m;
+        const name = (info.labels && info.labels[m]) || m;
+        option.textContent =
+          m === info.default && info.selectable && models.length > 1 ? `${name} · default` : name;
         return option;
       }),
     );
@@ -325,7 +328,10 @@
         azure_openai: "Set by the Azure deployment.",
         unconfigured: "Set OPENAI_API_KEY in .env.",
       };
-      const hint = info.selectable
+      // The plan's list comes from the account, so OPENAI_MODELS doesn't apply.
+      const hint = info.provider === "chatgpt"
+        ? ""
+        : info.selectable
         ? models.length < 2
           ? "Add more with OPENAI_MODELS in .env."
           : ""
@@ -355,6 +361,176 @@
         ? `Switched to ${selectedModel} from your next message`
         : `Switched to ${selectedModel}`,
     );
+  });
+
+  // ── Model access: API key or ChatGPT plan ────────────────
+  // Signing in happens on OpenAI's site in another tab; this tab learns the
+  // result from /api/auth/status. Tokens stay on the server: nothing here
+  // ever sees one.
+  const MANAGE_USAGE_URL = "https://chatgpt.com/settings/usage";
+  const accessRow = document.getElementById("access-row");
+  const accessChoice = document.getElementById("access-choice");
+  const accessHint = document.getElementById("access-hint");
+  const signInBtn = document.getElementById("chatgpt-sign-in");
+  const signOutBtn = document.getElementById("chatgpt-sign-out");
+  const planIndicator = document.getElementById("plan-indicator");
+  const planNotice = /** @type {HTMLDialogElement | null} */ (document.getElementById("plan-notice"));
+  /** @type {number | null} */
+  let signInPoll = null;
+
+  /** POST JSON: the server refuses anything else, so no other site can trigger these. */
+  async function postJson(path, body = {}) {
+    const res = await fetch(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(typeof data.detail === "string" ? data.detail : `HTTP ${res.status}`);
+    }
+    return data;
+  }
+
+  /**
+   * @param {{ signed_in: boolean, email: string | null, active_source: string,
+   *   using_plan: boolean, plan_notice_seen: boolean }} status
+   * @param {string} provider the current source from /healthz
+   */
+  function renderAccess(status, provider) {
+    if (!accessRow) {
+      return;
+    }
+    // The offline mock answers everything, so a sign-in would do nothing.
+    accessRow.hidden = provider === "mock";
+    if (signInBtn) {
+      signInBtn.hidden = status.signed_in;
+    }
+    if (accessChoice) {
+      accessChoice.hidden = !status.signed_in;
+      for (const button of accessChoice.querySelectorAll("button")) {
+        button.setAttribute("aria-checked", String(button.dataset.source === status.active_source));
+      }
+    }
+    if (signOutBtn) {
+      signOutBtn.hidden = !status.signed_in;
+    }
+    if (accessHint) {
+      accessHint.textContent = status.signed_in
+        ? `Signed in as ${status.email || "your ChatGPT account"}`
+        : "Use your ChatGPT plan instead of an API key.";
+    }
+    if (planIndicator) {
+      planIndicator.hidden = !status.using_plan;
+    }
+    if (status.using_plan && !status.plan_notice_seen && planNotice && !planNotice.open) {
+      planNotice.showModal();
+    }
+  }
+
+  async function loadAuth(provider) {
+    try {
+      const res = await fetch("/api/auth/status");
+      if (res.ok) {
+        renderAccess(await res.json(), provider);
+      }
+    } catch {
+      /* the next probe retries */
+    }
+  }
+
+  /** Re-read everything the source affects: access, models, provider label. */
+  async function refreshAccess() {
+    await probeHealth();
+  }
+
+  function stopSignInPoll() {
+    if (signInPoll !== null) {
+      clearInterval(signInPoll);
+      signInPoll = null;
+    }
+    if (signInBtn) {
+      signInBtn.disabled = false;
+      signInBtn.textContent = "Continue with ChatGPT";
+    }
+  }
+
+  signInBtn?.addEventListener("click", async () => {
+    stopSignInPoll(); // a second click replaces any sign-in still waiting
+    // Open the tab now, inside the click, or a popup blocker stops it; it's
+    // pointed at OpenAI once the server has made the sign-in URL. Cutting
+    // opener keeps OpenAI's pages from reaching back into this window.
+    const tab = window.open("about:blank", "_blank");
+    if (tab) {
+      tab.opener = null;
+    }
+    signInBtn.disabled = true;
+    signInBtn.textContent = "Waiting for ChatGPT…";
+    let url;
+    try {
+      ({ url } = await postJson("/api/auth/chatgpt/start"));
+    } catch (err) {
+      tab?.close();
+      stopSignInPoll();
+      showToast(`Couldn't start sign-in: ${err instanceof Error ? err.message : err}`);
+      return;
+    }
+    if (tab) {
+      tab.location.href = url;
+    } else {
+      window.location.href = url; // no new tab allowed: sign in here, then come back
+      return;
+    }
+    const startedAt = Date.now();
+    signInPoll = window.setInterval(async () => {
+      if (Date.now() - startedAt > 10 * 60 * 1000) {
+        stopSignInPoll();
+        return;
+      }
+      try {
+        const status = await (await fetch("/api/auth/status")).json();
+        if (status.signed_in) {
+          stopSignInPoll();
+          showToast(`Signed in as ${status.email || "your ChatGPT account"}`);
+          await refreshAccess();
+        }
+      } catch {
+        /* keep waiting */
+      }
+    }, 2000);
+  });
+
+  accessChoice?.addEventListener("click", async (event) => {
+    const button = event.target instanceof Element ? event.target.closest("button[data-source]") : null;
+    if (!(button instanceof HTMLButtonElement) || button.getAttribute("aria-checked") === "true") {
+      return;
+    }
+    try {
+      await postJson("/api/auth/source", { source: button.dataset.source });
+      showToast(button.dataset.source === "chatgpt" ? "Using your ChatGPT plan" : "Using your API key");
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : String(err));
+    }
+    await refreshAccess();
+  });
+
+  signOutBtn?.addEventListener("click", async () => {
+    try {
+      await postJson("/api/auth/chatgpt/sign-out");
+      showToast("Signed out of ChatGPT");
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : String(err));
+    }
+    await refreshAccess();
+  });
+
+  document.getElementById("plan-notice-ok")?.addEventListener("click", async () => {
+    planNotice?.close();
+    try {
+      await postJson("/api/auth/chatgpt/plan-notice-seen");
+    } catch {
+      /* it shows again next time; harmless */
+    }
   });
 
   // ── Theme ────────────────────────────────────────────────
@@ -1638,7 +1814,17 @@
   function showError(text) {
     pinnedToBottom = true;
     updateLatestButton();
-    appendMessage("error", text);
+    const el = appendMessage("error", text);
+    // A ChatGPT plan's usage limit: where to go next is the main action.
+    if (el && text.includes(MANAGE_USAGE_URL)) {
+      const link = document.createElement("a");
+      link.className = "btn-primary error-action";
+      link.href = MANAGE_USAGE_URL;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.textContent = "Manage usage";
+      el.append(link);
+    }
     announce(`Error: ${text}`);
   }
 
@@ -2373,6 +2559,7 @@
       const data = await res.json();
       const providerLabels = {
         mock: "mock",
+        chatgpt: "ChatGPT plan",
         openai: "OpenAI",
         azure_openai: "Azure OpenAI",
         unconfigured: "unconfigured",
@@ -2384,6 +2571,7 @@
             ? "mock"
             : "azure";
       await loadModels();
+      await loadAuth(typeof data.provider === "string" ? data.provider : "");
       if (statProvider) {
         statProvider.textContent = provider;
       }

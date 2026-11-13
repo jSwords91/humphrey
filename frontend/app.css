@@ -2546,3 +2546,175 @@ button:active:not(:disabled):not(.latest-btn):not(.btn-send) {
     transition: none !important;
   }
 }
+
+/* ── ChatGPT plan access (Details pane, composer, notice) ─────────────── */
+
+/* Like the model row: a control, full width, label above. */
+.stats-row-access {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.4rem;
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.stats-row-access dd {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.4rem;
+  overflow: visible;
+  white-space: normal;
+}
+
+.access-choice {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  width: 100%;
+  padding: 2px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-inset);
+}
+
+.access-choice button {
+  appearance: none;
+  padding: 0.35rem 0.5rem;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-muted);
+  font: inherit;
+  font-size: 0.8125rem;
+  cursor: pointer;
+  transition:
+    background-color var(--duration) var(--ease),
+    color var(--duration) var(--ease);
+}
+
+.access-choice button:hover {
+  color: var(--color-fg);
+}
+
+.access-choice button[aria-checked="true"] {
+  background: var(--color-high);
+  color: var(--color-fg);
+}
+
+.access-choice button:focus-visible,
+.btn-chatgpt:focus-visible,
+.link-btn:focus-visible {
+  outline: 2px solid var(--hb-accent);
+  outline-offset: 1px;
+}
+
+.btn-chatgpt {
+  appearance: none;
+  width: 100%;
+  padding: 0.45rem 0.75rem;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-elevated);
+  color: var(--color-fg);
+  font: inherit;
+  font-size: 0.8125rem;
+  font-weight: var(--fw-medium);
+  cursor: pointer;
+  transition: border-color var(--duration) var(--ease);
+}
+
+.btn-chatgpt:hover:not(:disabled) {
+  border-color: var(--hb-accent);
+}
+
+.btn-chatgpt:disabled {
+  cursor: progress;
+  opacity: 0.7;
+}
+
+.link-btn {
+  appearance: none;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--color-muted);
+  font: inherit;
+  font-size: 0.75rem;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.link-btn:hover {
+  color: var(--color-fg);
+}
+
+.plan-indicator {
+  margin-right: auto;
+  font-size: 0.75rem;
+  color: var(--color-muted);
+  white-space: nowrap;
+}
+
+.plan-indicator a {
+  color: inherit;
+  text-underline-offset: 2px;
+}
+
+.plan-indicator a:hover {
+  color: var(--color-fg);
+}
+
+/* The indicator matters more than the keyboard hint when space is short. */
+@media (max-width: 640px) {
+  .composer-bar:has(.plan-indicator:not([hidden])) .composer-hint {
+    display: none;
+  }
+}
+
+.plan-notice {
+  width: min(440px, 92vw);
+  padding: var(--space-5);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--color-elevated);
+  color: var(--color-fg);
+  box-shadow: var(--shadow-md);
+}
+
+.plan-notice[open] {
+  animation: msg-enter var(--duration-msg) var(--ease) both;
+}
+
+.plan-notice::backdrop {
+  background: color-mix(in srgb, var(--hb-ink) 55%, transparent);
+  backdrop-filter: blur(6px);
+}
+
+.plan-notice h2 {
+  margin: 0 0 var(--space-2);
+  font-size: 1rem;
+  font-weight: var(--fw-medium);
+}
+
+.plan-notice p {
+  margin: 0 0 var(--space-4);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-snug);
+  color: var(--color-muted);
+}
+
+.plan-notice-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.plan-notice-actions a {
+  text-decoration: none;
+}
+
+.msg-error .error-action {
+  display: inline-block;
+  margin-top: var(--space-2);
+  text-decoration: none;
+}
