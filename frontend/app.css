@@ -130,25 +130,6 @@ button:active:not(:disabled):not(.latest-btn):not(.btn-send) {
   opacity: 0.85;
 }
 
-/* While any tool runs, the header's bottom edge becomes the travelling
-   band - the one place it is always in view, whatever is scrolled. */
-.header::after {
-  content: "";
-  position: absolute;
-  inset: auto 0 -1px;
-  height: 3px;
-  background: var(--hb-band);
-  background-size: 28px 100%;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 240ms var(--ease);
-}
-
-.shell[data-tools="1"] .header::after {
-  opacity: 1;
-  animation: hb-band 1.2s linear infinite;
-}
-
 .header-right {
   gap: var(--space-2);
 }
@@ -1346,9 +1327,8 @@ button:active:not(:disabled):not(.latest-btn):not(.btn-send) {
   overflow: hidden;
 }
 
-/* Status line along the top edge of tool cards and the activity dock */
-.tool::before,
-.activity-dock::before {
+/* Status line along the top edge of tool cards */
+.tool::before {
   content: "";
   position: absolute;
   inset: 0 0 auto;
@@ -1356,8 +1336,7 @@ button:active:not(:disabled):not(.latest-btn):not(.btn-send) {
   background: var(--color-hairline);
 }
 
-.tool[data-state="running"]::before,
-.activity-dock::before {
+.tool[data-state="running"]::before {
   background: var(--hb-band);
   background-size: 28px 100%;
   animation: hb-band 1.2s linear infinite;
@@ -1393,12 +1372,6 @@ button:active:not(:disabled):not(.latest-btn):not(.btn-send) {
   to {
     transform: scaleX(1);
   }
-}
-
-.tool.is-flash {
-  outline: 2px solid var(--hb-accent);
-  outline-offset: 2px;
-  transition: outline-color 900ms var(--ease);
 }
 
 .tool-toggle {
@@ -1571,15 +1544,45 @@ button:active:not(:disabled):not(.latest-btn):not(.btn-send) {
 }
 
 .tool-cluster-summary {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 0.55rem;
   list-style: none;
   cursor: pointer;
-  padding: 0.5rem 0.7rem;
+  padding: calc(0.5rem + var(--hb-band-h)) 0.7rem 0.5rem;
   border-radius: var(--radius-sm);
   background: var(--color-elevated);
   border: 1px solid var(--color-border);
+  overflow: hidden;
+}
+
+/* The same status line as a tool card's top edge. A cluster collapses
+   while its calls run, hiding the cards' own lines, so the travelling band
+   shows here, where the work is. It runs while any call is still running,
+   even after one has failed; then it settles to done or error. */
+.tool-cluster-summary::after {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: var(--hb-band-h);
+  background: var(--color-hairline);
+}
+
+.tool-cluster[data-running="1"] > .tool-cluster-summary::after {
+  background: var(--hb-band);
+  background-size: 28px 100%;
+  animation: hb-band 1.2s linear infinite;
+}
+
+.tool-cluster[data-running="0"][data-state="done"] > .tool-cluster-summary::after {
+  background: var(--hb-accent);
+  transform-origin: left;
+  animation: hb-grow 0.6s ease-out;
+}
+
+.tool-cluster[data-running="0"][data-state="error"] > .tool-cluster-summary::after {
+  background: var(--hb-attention);
 }
 
 .tool-cluster-summary::-webkit-details-marker,
@@ -2032,81 +2035,6 @@ button:active:not(:disabled):not(.latest-btn):not(.btn-send) {
   flex-shrink: 0;
 }
 
-.activity-dock {
-  position: relative;
-  overflow: hidden;
-  background: var(--color-elevated);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow-soft);
-  padding: calc(0.75rem + var(--hb-band-h)) 0.9rem 0.75rem;
-  animation: chip-enter 160ms var(--ease) both;
-}
-
-.activity-head {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  margin-bottom: 0.55rem;
-}
-
-.activity-title {
-  font-size: 0.8125rem;
-  font-weight: var(--fw-semibold);
-  color: var(--color-fg);
-}
-
-.activity-list {
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-}
-
-.activity-row {
-  appearance: none;
-  width: 100%;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
-  gap: 0.65rem;
-  align-items: center;
-  border: 0;
-  background: transparent;
-  padding: 0.35rem 0.25rem;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  font: inherit;
-  text-align: left;
-  color: inherit;
-}
-
-.activity-row:hover {
-  background: var(--color-hover);
-}
-
-.activity-name {
-  font-family: var(--font-mono);
-  font-size: 0.8125rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.activity-preview {
-  font-size: 0.75rem;
-  color: var(--color-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 10rem;
-}
-
-.activity-elapsed {
-  font-family: var(--font-mono);
-  font-size: 0.75rem;
-  color: var(--color-muted);
-}
-
 .queue {
   display: flex;
   flex-wrap: wrap;
@@ -2510,7 +2438,6 @@ button:active:not(:disabled):not(.latest-btn):not(.btn-send) {
 @media (prefers-reduced-motion: reduce) {
   .empty-state,
   .msg-enter,
-  .activity-dock,
   .queue-chip,
   .latest-btn,
   .toast,
@@ -2523,8 +2450,7 @@ button:active:not(:disabled):not(.latest-btn):not(.btn-send) {
   .tool::before,
   .artifact::before,
   .artifact-viewer[open],
-  .activity-dock::before,
-  .shell[data-tools="1"] .header::after {
+  .tool-cluster-summary::after {
     animation: none !important;
   }
 

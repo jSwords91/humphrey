@@ -23,9 +23,6 @@
   const detailsBtn = document.getElementById("details-btn");
   const sessionList = document.getElementById("session-list");
   const sessionsCount = document.getElementById("sessions-count");
-  const activityDock = document.getElementById("activity-dock");
-  const activityTitle = document.getElementById("activity-title");
-  const activityList = document.getElementById("activity-list");
   const queueEl = document.getElementById("queue");
   const toastEl = document.getElementById("toast");
   const srAnnounce = document.getElementById("sr-announce");
@@ -82,8 +79,6 @@
   let contextTokens = 0;
   /** @type {Map<string, any>} */
   let liveTools = new Map();
-  /** @type {number | null} */
-  let activityTimer = null;
   /** @type {number | null} */
   let thoughtTimer = null;
   let toastTimer = 0;
@@ -1940,7 +1935,7 @@
   }
 
   /**
-   * One short phrase for the card meta and activity dock.
+   * One short phrase for the card meta.
    * @param {string} tool
    * @param {string} raw
    * @param {{ diff?: unknown, exit_code?: unknown, is_error?: unknown }} event
@@ -2009,82 +2004,16 @@
     return `${display}(${parts.join(", ")}${more})`;
   }
 
-  // Header band: on while any tool runs, held briefly so sub-second tools
-  // still read as "something ran" instead of a flicker.
-  const TOOL_BAND_MIN_MS = 900;
-  let toolBandSince = 0;
-  let toolBandTimer = 0;
-
-  /** @param {boolean} running */
-  function setToolsRunning(running) {
-    window.clearTimeout(toolBandTimer);
-    if (running) {
-      if (stage.dataset.tools !== "1") {
-        toolBandSince = performance.now();
-        stage.dataset.tools = "1";
-      }
-      return;
-    }
-    const remaining = TOOL_BAND_MIN_MS - (performance.now() - toolBandSince);
-    toolBandTimer = window.setTimeout(() => {
-      stage.dataset.tools = "0";
-    }, Math.max(0, remaining));
-  }
-
-  function refreshActivityDock() {
+  /** Keep Details' "Active" line on the latest running tool, or mark it done. */
+  function refreshActiveTool() {
     const running = [...liveTools.values()].filter((t) => t.el.dataset.state === "running");
-    setToolsRunning(running.length > 0);
     if (!running.length) {
-      activityDock.hidden = true;
-      activityList.replaceChildren();
-      if (activityTimer) {
-        window.clearInterval(activityTimer);
-        activityTimer = null;
-      }
       if (lastToolSummary.endsWith(" · running")) {
         setToolStat(lastToolSummary.replace(/ · running$/, " · done"));
       }
       return;
     }
-
-    activityDock.hidden = false;
-    activityTitle.textContent = `${running.length} tool${running.length === 1 ? "" : "s"} running`;
-    activityList.replaceChildren();
-
-    const primary = running[running.length - 1];
-    setToolStat(`${primary.display} · running`);
-
-    for (const card of running) {
-      const li = document.createElement("li");
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "activity-row";
-      const name = document.createElement("span");
-      name.className = "activity-name";
-      name.textContent = card.display;
-      const preview = document.createElement("span");
-      preview.className = "activity-preview";
-      preview.textContent = card.preview || "…";
-      const elapsed = document.createElement("span");
-      elapsed.className = "activity-elapsed";
-      elapsed.textContent = `${Math.max(1, Math.round(performance.now() - card.started))} ms`;
-      btn.append(name, preview, elapsed);
-      btn.addEventListener("click", () => focusToolCard(card.el));
-      li.append(btn);
-      activityList.append(li);
-    }
-
-    if (!activityTimer) {
-      activityTimer = window.setInterval(() => refreshActivityDock(), 250);
-    }
-  }
-
-  /** @param {HTMLElement} el */
-  function focusToolCard(el) {
-    el.scrollIntoView({ behavior: "smooth", block: "center" });
-    el.classList.add("is-flash");
-    window.setTimeout(() => el.classList.remove("is-flash"), 900);
-    window.setTimeout(() => syncPinFromScroll(), 400);
+    setToolStat(`${running[running.length - 1].display} · running`);
   }
 
   /**
@@ -2138,6 +2067,7 @@
     details.className = "tool-cluster";
     details.open = true; // a lone call renders exactly like a plain row
     details.dataset.state = "running";
+    details.dataset.running = "1"; // drives the band; see updateToolClusterChrome
     details.dataset.userToggled = "0";
 
     const summary = document.createElement("summary");
@@ -2169,6 +2099,8 @@
 
   /** @param {{ details: HTMLDetailsElement, summary: HTMLElement, label: HTMLElement, meta: HTMLElement, tool: string, total: number, running: number, done: number, error: number }} cluster */
   function updateToolClusterChrome(cluster) {
+    // Apart from state: a cluster with a failure can still have calls running.
+    cluster.details.dataset.running = cluster.running > 0 ? "1" : "0";
     const isCluster = cluster.total > 1;
     cluster.summary.hidden = !isCluster;
     if (!isCluster) {
@@ -2322,7 +2254,7 @@
       started: performance.now(),
     };
     liveTools.set(callId, card);
-    refreshActivityDock();
+    refreshActiveTool();
     return card;
   }
 
@@ -2447,7 +2379,7 @@
     queue = [];
     renderQueue();
     liveTools.clear();
-    refreshActivityDock();
+    refreshActiveTool();
     stopThoughtTimer();
     pinnedToBottom = true;
     hasNewBelow = false;
@@ -2556,7 +2488,7 @@
       localStorage.setItem(SESSION_KEY, id);
       clearTranscript();
       liveTools.clear();
-      refreshActivityDock();
+      refreshActiveTool();
       toolsUsed = 0;
       charsIn = 0;
       charsOut = 0;
@@ -2943,7 +2875,7 @@
         liveTools.delete(callId);
       }
       setToolStat(`${card.display} · ${isError ? "error" : "done"} · ${ms} ms`);
-      refreshActivityDock();
+      refreshActiveTool();
       pinToBottom();
       return;
     }
@@ -3151,7 +3083,7 @@
         activeRun = null;
         finalizeStuckTools(state);
         liveTools.clear();
-        refreshActivityDock();
+        refreshActiveTool();
         settleThought(state);
         setRunning(false);
         void loadSessions();
