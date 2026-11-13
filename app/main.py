@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import html
@@ -397,6 +398,46 @@ async def get_session_image(session_id: str, digest: str) -> Response:
     )
 
 
+# Turn endings still running after their request was cancelled. asyncio
+# keeps only weak references to tasks, so without this one could be
+# garbage-collected part-way through saving.
+_finishing: set[asyncio.Task[None]] = set()
+
+
+async def finish_turn(
+    session: Session, store: Any, title_provider: Any, first_message: str
+) -> None:
+    """Save the turn, then name a new chat and save again.
+
+    As one task shielded from cancellation: when the browser goes away (a
+    reload, a closed tab), Starlette cancels this request, and the
+    cancellation lands on whatever is being awaited. Naming used to come
+    first, so a reload during the title call lost the whole new chat. Now
+    the transcript is saved first, and the whole sequence runs to the end
+    wherever the cancellation lands, title included (if the title model
+    fails, generate_session_title falls back to the start of the message).
+    """
+
+    async def save() -> None:
+        try:
+            await store.save(session)
+        except Exception:  # noqa: BLE001
+            logger.exception("failed to persist session %s", session.id)
+
+    async def save_then_name() -> None:
+        await save()
+        if session.title is None:
+            title = await generate_session_title(title_provider, first_message)
+            if title:
+                session.title = title
+                await save()
+
+    task = asyncio.create_task(save_then_name())
+    _finishing.add(task)
+    task.add_done_callback(_finishing.discard)
+    await asyncio.shield(task)
+
+
 def _require_active(session_id: str):
     if not SAFE_SESSION_ID.match(session_id):
         raise HTTPException(status_code=422, detail="Invalid session id.")
@@ -562,12 +603,7 @@ async def agent(body: AgentRequest, request: Request) -> StreamingResponse:
             # The harness started from model_context(); append only what this
             # turn added, so the stored transcript stays complete.
             session.messages.extend(harness.messages[len(history) :])
-            if session.title is None:
-                session.title = await generate_session_title(housekeeping, latest_user)
-            try:
-                await store.save(session)
-            except Exception:  # noqa: BLE001
-                logger.exception("failed to persist session %s", session_id)
+            await finish_turn(session, store, housekeeping, latest_user)
 
     return StreamingResponse(
         event_stream(),
