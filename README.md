@@ -92,9 +92,13 @@ A few things worth knowing:
   Session titles and context summaries count too, as they're model calls.
 - The model picker shows the models your account offers, not `OPENAI_MODELS`.
 - Tokens stay on your machine, in `data/credentials/chatgpt.json` (or
-  `HUMPHREY_CREDENTIALS_DIR`), readable only by you. They never go into
-  session storage, the browser or the logs, and git and Docker both ignore
-  that folder.
+  `HUMPHREY_CREDENTIALS_DIR`). They never go into session storage, the
+  browser or the logs, and git and Docker both ignore that folder. Humphrey
+  makes the file readable only by you, but some filesystems ignore that: on
+  a Windows drive under WSL (`/mnt/c/...`) every file is readable by everyone
+  in WSL. Details warns you when that's the case; point
+  `HUMPHREY_CREDENTIALS_DIR` at a Linux folder, such as
+  `~/.humphrey/credentials`, to fix it.
 - **Sign out** revokes the sign-in at OpenAI. You can also disconnect
   Humphrey in ChatGPT's settings. Either way, you'll need to sign in again
   to use your plan.

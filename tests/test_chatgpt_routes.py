@@ -112,6 +112,7 @@ async def test_status_starts_signed_out(local: AsyncClient, openai: dict) -> Non
         "using_plan": False,
         "plan_notice_seen": False,
         "manage_usage_url": "https://chatgpt.com/settings/usage",
+        "credentials_private": True,  # nothing stored yet
     }
 
 

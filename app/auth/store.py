@@ -8,6 +8,10 @@ half-written file; the file is 0600 and its directory 0700.
 
 Token fields are excluded from ``repr``, so logging a record (or an error
 that contains one) can't print a token.
+
+Some filesystems ignore chmod (a Windows drive mounted in WSL shows every
+file as rwxrwxrwx). The store can't fix that, so it says so: ``is_private``
+reports it, a warning is logged once, and the UI shows it.
 """
 
 from __future__ import annotations
@@ -81,6 +85,7 @@ class CredentialStore:
     def __init__(self, directory: Path) -> None:
         self._directory = directory
         self.path = directory / FILE_NAME
+        self._warned_not_private = False
 
     @property
     def lock_path(self) -> Path:
@@ -89,6 +94,16 @@ class CredentialStore:
     def ensure_directory(self) -> None:
         self._directory.mkdir(parents=True, exist_ok=True)
         os.chmod(self._directory, 0o700)
+
+    def is_private(self) -> bool:
+        """Whether only the owner can read the credentials. False where the
+        filesystem ignores chmod: a Windows drive under WSL (/mnt/c) shows
+        every file as rwxrwxrwx whatever Humphrey sets."""
+        try:
+            paths = [self._directory] + ([self.path] if self.path.exists() else [])
+            return all(path.stat().st_mode & 0o077 == 0 for path in paths)
+        except OSError:
+            return False
 
     def load(self) -> CredentialFile:
         """The stored credentials, or a fresh file's worth if none (or if the
@@ -114,6 +129,14 @@ class CredentialStore:
         except BaseException:
             Path(temporary).unlink(missing_ok=True)
             raise
+        if not self.is_private() and not self._warned_not_private:
+            self._warned_not_private = True
+            logger.warning(
+                "ChatGPT credentials at %s can't be made owner-only on this filesystem "
+                "(chmod has no effect here, as on a Windows drive under WSL). Set "
+                "HUMPHREY_CREDENTIALS_DIR to a folder on a Linux or macOS filesystem.",
+                self._directory,
+            )
 
 
 def _to_json(credentials: CredentialFile) -> dict[str, Any]:

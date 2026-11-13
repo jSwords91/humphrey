@@ -206,6 +206,8 @@ class ChatGPTAuth:
             "using_plan": signed_in and credentials.active_source == "chatgpt",
             "plan_notice_seen": bool(registration and registration.plan_notice_seen),
             "manage_usage_url": MANAGE_USAGE_URL,
+            # Only meaningful once something is stored; nothing to protect before.
+            "credentials_private": not signed_in or self._store.is_private(),
         }
 
     def using_plan(self) -> bool:

@@ -333,3 +333,41 @@ async def test_two_processes_sharing_the_file_refresh_once(server: FakeOpenAIAut
     refreshes = [form for _, form in server.requests if form.get("grant_type") == "refresh_token"]
     assert len(refreshes) == 1
     assert tokens[0] == tokens[1]
+
+
+def test_credentials_are_private_on_a_normal_filesystem(tmp_path: Path) -> None:
+    store = CredentialStore(tmp_path / "credentials")
+    store.save(store.load())
+    assert store.is_private()
+
+
+def test_a_filesystem_that_ignores_chmod_is_reported_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Like a Windows drive under WSL: whatever mode is set, everyone can read."""
+    import os
+
+    import app.auth.store as store_module
+
+    real_chmod, real_fchmod = os.chmod, os.fchmod  # store_module.os is the os module
+    monkeypatch.setattr(store_module.os, "fchmod", lambda fd, mode: real_fchmod(fd, 0o666))
+    monkeypatch.setattr(store_module.os, "chmod", lambda path, mode: real_chmod(path, 0o777))
+    caplog.set_level(logging.WARNING)
+
+    store = CredentialStore(tmp_path / "credentials")
+    store.save(store.load())
+    store.save(store.load())
+    assert not store.is_private()
+    warnings = [r for r in caplog.records if "can't be made owner-only" in r.getMessage()]
+    assert len(warnings) == 1
+    assert "HUMPHREY_CREDENTIALS_DIR" in warnings[0].getMessage()
+
+
+async def test_status_says_when_a_sign_in_is_stored_without_privacy(
+    auth: ChatGPTAuth, server: FakeOpenAIAuth, tmp_path: Path
+) -> None:
+    assert auth.status()["credentials_private"] is True  # nothing stored yet
+    await _sign_in(auth, server)
+    assert auth.status()["credentials_private"] is True
+    (tmp_path / "credentials" / "chatgpt.json").chmod(0o644)
+    assert auth.status()["credentials_private"] is False

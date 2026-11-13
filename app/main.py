@@ -156,6 +156,8 @@ class AuthStatusOut(BaseModel):
     using_plan: bool
     plan_notice_seen: bool
     manage_usage_url: str
+    # False where the filesystem ignores chmod (a Windows drive under WSL).
+    credentials_private: bool
 
 
 class SourceRequest(BaseModel):

@@ -371,6 +371,7 @@
   const accessRow = document.getElementById("access-row");
   const accessChoice = document.getElementById("access-choice");
   const accessHint = document.getElementById("access-hint");
+  const accessWarning = document.getElementById("access-warning");
   const signInBtn = document.getElementById("chatgpt-sign-in");
   const signOutBtn = document.getElementById("chatgpt-sign-out");
   const planIndicator = document.getElementById("plan-indicator");
@@ -394,7 +395,7 @@
 
   /**
    * @param {{ signed_in: boolean, email: string | null, active_source: string,
-   *   using_plan: boolean, plan_notice_seen: boolean }} status
+   *   using_plan: boolean, plan_notice_seen: boolean, credentials_private: boolean }} status
    * @param {string} provider the current source from /healthz
    */
   function renderAccess(status, provider) {
@@ -419,6 +420,9 @@
       accessHint.textContent = status.signed_in
         ? `Signed in as ${status.email || "your ChatGPT account"}`
         : "Use your ChatGPT plan instead of an API key.";
+    }
+    if (accessWarning) {
+      accessWarning.hidden = !(status.signed_in && status.credentials_private === false);
     }
     if (planIndicator) {
       planIndicator.hidden = !status.using_plan;

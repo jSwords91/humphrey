@@ -2607,6 +2607,10 @@ button:active:not(:disabled):not(.latest-btn):not(.btn-send) {
   outline-offset: 1px;
 }
 
+.access-warning {
+  color: var(--hb-attention-text);
+}
+
 .btn-chatgpt {
   appearance: none;
   width: 100%;
