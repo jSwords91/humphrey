@@ -20,9 +20,10 @@ at all — only the new ``thinking``/``thinking_signature`` fields on
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
 from typing import Any
 
+from brain.cancel import CancellationToken
 from brain.messages import (
     AgentMessage,
     AssistantMessage,
@@ -32,6 +33,7 @@ from brain.messages import (
 from brain.provider import ModelChunk, ToolCallDelta
 from brain.tools import AgentTool
 from providers.content import text_and_images
+from providers.errors import ProviderRequestError, error_from_body
 
 
 def _user_content_to_responses(content: str | list) -> Any:
@@ -168,6 +170,9 @@ class ResponsesStreamParser:
     """
 
     def __init__(self) -> None:
+        # Set by a terminal event. A stream that ends without one was cut
+        # short, and must not pass for a complete reply (see ``finished``).
+        self.finished = False
         self._tool_index_by_item_id: dict[str, int] = {}
         self._tool_has_delta: set[str] = set()
         self._reasoning_items: dict[str, dict[str, Any]] = {}
@@ -229,6 +234,7 @@ class ResponsesStreamParser:
             return None
 
         if event_type in ("response.completed", "response.incomplete"):
+            self.finished = True
             usage = self._extract_usage(event)
             signature = self._first_reasoning_signature()
             if usage or signature:
@@ -236,11 +242,14 @@ class ResponsesStreamParser:
             return None
 
         if event_type == "response.failed":
-            raise RuntimeError(self._failure_message(event))
+            self.finished = True
+            response = event.get("response")
+            raise error_from_body(response.get("error") if isinstance(response, Mapping) else None)
 
         if event_type == "error":
-            message = event.get("message")
-            raise RuntimeError(message if isinstance(message, str) else "Responses API error")
+            # Fields at the top level, or under "error" (the SDK raises that
+            # shape itself before it gets here, but don't rely on that).
+            raise error_from_body(event)
 
         return None
 
@@ -294,13 +303,27 @@ class ResponsesStreamParser:
             "total_tokens": int(usage.get("total_tokens") or 0),
         }
 
-    @staticmethod
-    def _failure_message(event: Mapping[str, Any]) -> str:
-        response = event.get("response")
-        if isinstance(response, Mapping):
-            error = response.get("error")
-            if isinstance(error, Mapping):
-                message = error.get("message")
-                if isinstance(message, str) and message:
-                    return message
-        return "Responses API request failed"
+
+async def read_responses_stream(
+    events: AsyncIterator[Any],
+    parser: ResponsesStreamParser,
+    signal: CancellationToken | None,
+) -> AsyncIterator[ModelChunk]:
+    """Feed an SDK Responses event stream through ``parser``.
+
+    A stream that stops without a terminal event (``response.completed``,
+    ``response.incomplete`` or ``response.failed``) was cut short; it raises
+    rather than passing for a complete reply. Stopping because the run was
+    cancelled is not a failure.
+    """
+    async for event in events:
+        if signal is not None and signal.is_cancelled():
+            return
+        chunk = parser.feed(event.model_dump())
+        if chunk is not None:
+            yield chunk
+    if not parser.finished and not (signal is not None and signal.is_cancelled()):
+        raise ProviderRequestError(
+            "The model's reply stopped before it finished. Try sending your message again.",
+            code="stream_incomplete",
+        )

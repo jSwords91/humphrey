@@ -5,12 +5,19 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from functools import lru_cache
 
+import openai
 from openai import AsyncOpenAI
 
 from brain.cancel import CancellationToken
 from brain.messages import AgentMessage
 from providers.openai_adapter import messages_to_openai, tools_to_openai
-from providers.openai_responses import ResponsesStreamParser, build_responses_payload, uses_responses_api
+from providers.errors import from_openai_error
+from providers.openai_responses import (
+    ResponsesStreamParser,
+    build_responses_payload,
+    read_responses_stream,
+    uses_responses_api,
+)
 from brain.provider import ModelChunk, ToolCallDelta
 from app.settings import Settings, get_settings
 from brain.tools import AgentTool
@@ -42,6 +49,20 @@ class OpenAIProvider:
         return self._model
 
     async def stream(
+        self,
+        messages: list[AgentMessage],
+        tools: list[AgentTool],
+        *,
+        system: str,
+        signal: CancellationToken | None = None,
+    ) -> AsyncIterator[ModelChunk]:
+        try:
+            async for chunk in self._stream(messages, tools, system=system, signal=signal):
+                yield chunk
+        except openai.APIError as exc:
+            raise from_openai_error(exc) from exc
+
+    async def _stream(
         self,
         messages: list[AgentMessage],
         tools: list[AgentTool],
@@ -109,11 +130,6 @@ class OpenAIProvider:
             tools=tools,
             reasoning_effort=self._settings.reasoning_effort,
         )
-        parser = ResponsesStreamParser()
         stream = await client.responses.create(**payload)
-        async for event in stream:
-            if signal is not None and signal.is_cancelled():
-                break
-            chunk = parser.feed(event.model_dump())
-            if chunk is not None:
-                yield chunk
+        async for chunk in read_responses_stream(stream, ResponsesStreamParser(), signal):
+            yield chunk
