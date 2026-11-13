@@ -24,6 +24,9 @@ class ModelInfo:
     slug: str
     display_name: str
     context_window: int | None = None
+    # Reasoning efforts the list advertises for this model, in its order. As
+    # advertised, not as checked: callers filter for what the API accepts.
+    reasoning_efforts: tuple[str, ...] = ()
 
 
 async def list_models(
@@ -52,11 +55,17 @@ async def list_models(
         slug = entry.get("slug") or entry.get("id")
         if isinstance(slug, str) and slug:
             window = entry.get("context_window")
+            levels = entry.get("supported_reasoning_levels") or []
             models.append(
                 ModelInfo(
                     slug=slug,
                     display_name=str(entry.get("display_name") or slug),
                     context_window=window if isinstance(window, int) else None,
+                    reasoning_efforts=tuple(
+                        level["effort"]
+                        for level in levels
+                        if isinstance(level, dict) and isinstance(level.get("effort"), str)
+                    ),
                 )
             )
     return models

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from app.auth.chatgpt import get_chatgpt_auth
 from app.settings import active_provider_kind, get_settings
@@ -21,11 +21,18 @@ from brain.provider import ModelProvider
 from providers import get_provider
 from providers.openai_models import ModelInfo, list_models
 from providers.openai_provider import OpenAIProvider
+from providers.openai_responses import uses_responses_api
 
 logger = logging.getLogger(__name__)
 
 PLAN_MODELS_TTL_SECONDS = 600
-_plan_models: tuple[str, float, list[ModelInfo]] | None = None  # (client id, fetched at, models)
+_plan_models: tuple[str, float, list[ModelInfo]] | None = None  # (account, fetched at, models)
+
+# Reasoning efforts a Responses model can be asked for. Checked live against
+# both the API key and the ChatGPT plan (gpt-5.6-sol): these are accepted,
+# "minimal" and "ultra" are refused. The plan's model list advertises
+# "ultra" anyway, so its lists are filtered through this, never trusted alone.
+EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 
 
 class UnknownModel(ValueError):
@@ -39,6 +46,12 @@ class ModelOptions:
     default: str
     models: list[str]
     labels: dict[str, str]  # display names, where the source gives them
+    # Reasoning efforts each model may be asked for; empty where reasoning
+    # isn't requested (Chat Completions models, REASONING_EFFORT="", Azure,
+    # the mock).
+    efforts: dict[str, list[str]] = field(default_factory=dict)
+    # REASONING_EFFORT: the one default, used unless someone picks another.
+    default_effort: str | None = None
 
 
 def current_source() -> str:
@@ -74,12 +87,29 @@ async def model_options() -> ModelOptions:
             models = []
         slugs = [m.slug for m in models] or [settings.openai_model]
         default = settings.openai_model if settings.openai_model in slugs else slugs[0]
+        advertised = {m.slug: m.reasoning_efforts for m in models}
+        efforts = {
+            slug: [e for e in EFFORT_LEVELS if e in advertised.get(slug, EFFORT_LEVELS)]
+            for slug in slugs
+        }
         return ModelOptions(
-            source, True, default, slugs, {m.slug: m.display_name for m in models}
+            source,
+            True,
+            default,
+            slugs,
+            {m.slug: m.display_name for m in models},
+            _only_when_reasoning(efforts),
+            settings.reasoning_effort,
         )
     if source == "openai":
         models = list(settings.selectable_models)
-        return ModelOptions(source, True, models[0], models, {})
+        efforts = {
+            m: list(EFFORT_LEVELS) if uses_responses_api(m) else [] for m in models
+        }
+        return ModelOptions(
+            source, True, models[0], models, {}, _only_when_reasoning(efforts),
+            settings.reasoning_effort,
+        )
     fixed = {
         "mock": "mock",
         "azure_openai": settings.azure_openai_deployment,
@@ -88,23 +118,38 @@ async def model_options() -> ModelOptions:
     return ModelOptions(source, False, fixed, [fixed], {})
 
 
-async def build_provider(requested_model: str | None) -> ModelProvider:
+def _only_when_reasoning(efforts: dict[str, list[str]]) -> dict[str, list[str]]:
+    """No choices when REASONING_EFFORT is empty: reasoning isn't requested."""
+    if not get_settings().reasoning_effort:
+        return {model: [] for model in efforts}
+    return efforts
+
+
+async def build_provider(
+    requested_model: str | None, requested_effort: str | None = None
+) -> ModelProvider:
     """The provider for the current source. ``requested_model`` must be one
-    the source offers; for fixed-model sources it's ignored."""
+    the source offers (ignored for fixed-model sources), and
+    ``requested_effort`` one that model offers; without one, REASONING_EFFORT
+    applies."""
     options = await model_options()
     model = None
     if requested_model and options.selectable:
         if requested_model not in options.models:
             raise UnknownModel(f"Unknown model: {requested_model}")
         model = requested_model
+    chosen = model or options.default
+    if requested_effort and requested_effort not in options.efforts.get(chosen, []):
+        raise UnknownModel(f"{chosen} doesn't offer reasoning effort {requested_effort!r}")
     if options.source == "chatgpt":
         return OpenAIProvider(
             get_settings(),
             model=model or options.default,
             credential=get_chatgpt_auth().access_token,
             responses_only=True,  # the plan refuses Chat Completions
+            reasoning_effort=requested_effort,
         )
-    return get_provider(model)
+    return get_provider(model, reasoning_effort=requested_effort)
 
 
 def reset_plan_models_for_tests() -> None:

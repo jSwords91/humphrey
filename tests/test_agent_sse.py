@@ -327,7 +327,7 @@ async def test_agent_endpoint_auto_compacts_a_large_history(
                 seen.append(list(messages))
             return super().stream(messages, tools, system=system, signal=signal)
 
-    async def recording_provider(model=None):
+    async def recording_provider(model=None, effort=None):
         return RecordingProvider()
 
     monkeypatch.setattr(app.main, "build_provider", recording_provider)

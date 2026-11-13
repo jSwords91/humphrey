@@ -52,8 +52,11 @@ class OpenAIProvider:
         *,
         credential: CredentialSource | None = None,
         responses_only: bool = False,
+        reasoning_effort: str | None = None,
     ) -> None:
-        """``credential`` replaces the API key, e.g. a ChatGPT plan token.
+        """``reasoning_effort`` overrides REASONING_EFFORT for this provider's
+        requests (the caller checks the model accepts it).
+        ``credential`` replaces the API key, e.g. a ChatGPT plan token.
         ``responses_only`` sends every model through the Responses API, for
         routes that refuse Chat Completions (the ChatGPT plan does). Such a
         route also leaves retries to this provider: the SDK's own retries
@@ -71,6 +74,7 @@ class OpenAIProvider:
 
         self._credential = credential
         self._responses_only = responses_only
+        self._reasoning_effort = reasoning_effort or self._settings.reasoning_effort
         self._model = model or self._settings.openai_model
 
     @property
@@ -158,7 +162,7 @@ class OpenAIProvider:
             system=system,
             messages=messages,
             tools=tools,
-            reasoning_effort=self._settings.reasoning_effort,
+            reasoning_effort=self._reasoning_effort,
         )
         stream = await client.responses.create(**payload)
         async for chunk in read_responses_stream(stream, ResponsesStreamParser(), signal):

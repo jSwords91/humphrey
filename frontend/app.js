@@ -284,6 +284,56 @@
   /** @type {string | null} null = the provider decides (mock, Azure) */
   let selectedModel = null;
 
+  // Reasoning effort: a standing preference like the model, but checked
+  // against what the chosen model offers each time it changes.
+  const EFFORT_KEY = "humphrey.effort";
+  const EFFORT_LABELS = { low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Max" };
+  const effortRow = document.getElementById("effort-row");
+  const effortSelect = /** @type {HTMLSelectElement | null} */ (document.getElementById("effort-select"));
+  /** @type {string | null} null = the server's default (REASONING_EFFORT) */
+  let selectedEffort = null;
+  /** @type {{ efforts?: Record<string, string[]>, default_effort?: string | null, default: string } | null} */
+  let modelsInfo = null;
+
+  function renderEffortPicker() {
+    if (!effortRow || !effortSelect || !modelsInfo) {
+      return;
+    }
+    const model = selectedModel || modelsInfo.default;
+    const levels = (modelsInfo.efforts && modelsInfo.efforts[model]) || [];
+    effortRow.hidden = levels.length === 0;
+    if (levels.length === 0) {
+      selectedEffort = null;
+      return;
+    }
+    const fallback = modelsInfo.default_effort && levels.includes(modelsInfo.default_effort)
+      ? modelsInfo.default_effort
+      : levels[0];
+    const stored = readStored(EFFORT_KEY);
+    selectedEffort = stored && levels.includes(stored) ? stored : fallback;
+    effortSelect.replaceChildren(
+      ...levels.map((level) => {
+        const option = document.createElement("option");
+        option.value = level;
+        const name = EFFORT_LABELS[level] || level;
+        option.textContent = level === modelsInfo.default_effort ? `${name} · default` : name;
+        return option;
+      }),
+    );
+    effortSelect.value = selectedEffort;
+  }
+
+  effortSelect?.addEventListener("change", () => {
+    selectedEffort = effortSelect.value;
+    writeStored(EFFORT_KEY, selectedEffort);
+    const name = EFFORT_LABELS[selectedEffort] || selectedEffort;
+    showToast(
+      stage.dataset.running === "1"
+        ? `Reasoning set to ${name} from your next message`
+        : `Reasoning set to ${name}`,
+    );
+  });
+
   function readStored(key) {
     try {
       return localStorage.getItem(key);
@@ -321,6 +371,8 @@
     );
     modelSelect.value = selectedModel || info.default;
     modelSelect.disabled = !info.selectable || models.length < 2;
+    modelsInfo = info;
+    renderEffortPicker();
     modelSelect.title = modelSelect.value;
     if (modelHint) {
       const hints = {
@@ -356,6 +408,7 @@
     selectedModel = modelSelect.value;
     modelSelect.title = selectedModel;
     writeStored(MODEL_KEY, selectedModel);
+    renderEffortPicker(); // the new model may offer different levels
     showToast(
       stage.dataset.running === "1"
         ? `Switched to ${selectedModel} from your next message`
@@ -3020,6 +3073,7 @@
           },
           session_id: sessionId,
           ...(selectedModel ? { model: selectedModel } : {}),
+          ...(selectedEffort ? { reasoning_effort: selectedEffort } : {}),
         }),
         signal: controller.signal,
       });

@@ -105,6 +105,9 @@ class AgentRequest(BaseModel):
     session_id: str | None = Field(default=None, max_length=64)
     # Per-request OpenAI model; must be one of /api/models. Omit for the default.
     model: str | None = Field(default=None, max_length=100)
+    # Per-request reasoning effort; one the model offers in /api/models.
+    # Omit for REASONING_EFFORT.
+    reasoning_effort: str | None = Field(default=None, max_length=20)
 
 
 class QueueRequest(BaseModel):
@@ -145,6 +148,9 @@ class ModelsOut(BaseModel):
     models: list[str]
     # Display names, where the source gives them (the ChatGPT plan does).
     labels: dict[str, str] = Field(default_factory=dict)
+    # Reasoning efforts per model, and the default (REASONING_EFFORT).
+    efforts: dict[str, list[str]] = Field(default_factory=dict)
+    default_effort: str | None = None
 
 
 class AuthStatusOut(BaseModel):
@@ -221,6 +227,8 @@ async def list_models() -> ModelsOut:
         default=options.default,
         models=options.models,
         labels=options.labels,
+        efforts=options.efforts,
+        default_effort=options.default_effort,
     )
 
 
@@ -477,7 +485,10 @@ async def agent(body: AgentRequest, request: Request) -> StreamingResponse:
     latest_user = body.message.content
     settings = get_settings()
     try:
-        provider = await build_provider(body.model)
+        provider = await build_provider(body.model, body.reasoning_effort)
+        # Housekeeping calls (compaction summaries, the chat's title) use the
+        # default effort: a "max" chat shouldn't make every title a max call.
+        housekeeping = await build_provider(body.model)
     except UnknownModel as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -495,7 +506,7 @@ async def agent(body: AgentRequest, request: Request) -> StreamingResponse:
     history = session.model_context()
     compaction = await compact_if_needed(
         history,
-        provider=provider,
+        provider=housekeeping,
         system=system_prompt(),
         tools=TOOLS,
         context_window_tokens=settings.context_window_tokens,
@@ -552,7 +563,7 @@ async def agent(body: AgentRequest, request: Request) -> StreamingResponse:
             # turn added, so the stored transcript stays complete.
             session.messages.extend(harness.messages[len(history) :])
             if session.title is None:
-                session.title = await generate_session_title(harness.config.provider, latest_user)
+                session.title = await generate_session_title(housekeeping, latest_user)
             try:
                 await store.save(session)
             except Exception:  # noqa: BLE001

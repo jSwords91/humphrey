@@ -23,7 +23,16 @@ async def test_plan_models_use_slugs_and_only_listed_ones_are_offered() -> None:
             200,
             json={
                 "data": [
-                    {"slug": "gpt-6.1-sol", "display_name": "GPT-6.1 Sol", "visibility": "list", "context_window": 272000},
+                    {
+                        "slug": "gpt-6.1-sol",
+                        "display_name": "GPT-6.1 Sol",
+                        "visibility": "list",
+                        "context_window": 272000,
+                        "supported_reasoning_levels": [
+                            {"effort": "low", "description": "Fast"},
+                            {"effort": "ultra", "description": "Delegates"},
+                        ],
+                    },
                     {"slug": "internal-model", "visibility": "hide"},
                     {"slug": "gpt-5.6-luna", "visibility": "list"},
                 ]
@@ -32,8 +41,8 @@ async def test_plan_models_use_slugs_and_only_listed_ones_are_offered() -> None:
 
     models = await list_models("the-token", http=_http(handler))
     assert models == [
-        ModelInfo("gpt-6.1-sol", "GPT-6.1 Sol", 272000),
-        ModelInfo("gpt-5.6-luna", "gpt-5.6-luna", None),
+        ModelInfo("gpt-6.1-sol", "GPT-6.1 Sol", 272000, ("low", "ultra")),  # as advertised
+        ModelInfo("gpt-5.6-luna", "gpt-5.6-luna", None, ()),
     ]
     assert seen == ["Bearer the-token"]
 

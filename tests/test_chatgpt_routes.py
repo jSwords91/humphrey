@@ -21,9 +21,10 @@ from providers.openai_models import ModelInfo
 from tests.fake_openai_auth import FakeOpenAIAuth
 
 JSON = {"Content-Type": "application/json"}
+# As the plan advertised them live, including "ultra", which the API refuses.
 PLAN_MODELS = [
-    ModelInfo("gpt-6.1-sol", "GPT-6.1 Sol", 272000),
-    ModelInfo("gpt-5.6-sol", "GPT-5.6 Sol", 272000),
+    ModelInfo("gpt-6.1-sol", "GPT-6.1 Sol", 272000, ("low", "medium", "high", "xhigh", "max", "ultra")),
+    ModelInfo("gpt-5.6-sol", "GPT-5.6 Sol", 272000, ("low", "medium", "high", "xhigh", "max", "ultra")),
 ]
 
 
@@ -176,6 +177,12 @@ async def test_with_the_plan_chosen_models_and_chats_use_it(local: AsyncClient, 
         "default": "gpt-5.6-sol",  # OPENAI_MODEL, since the plan offers it
         "models": ["gpt-6.1-sol", "gpt-5.6-sol"],
         "labels": {"gpt-6.1-sol": "GPT-6.1 Sol", "gpt-5.6-sol": "GPT-5.6 Sol"},
+        # Never "ultra": advertised, but the Responses API refuses it.
+        "efforts": {
+            "gpt-6.1-sol": ["low", "medium", "high", "xhigh", "max"],
+            "gpt-5.6-sol": ["low", "medium", "high", "xhigh", "max"],
+        },
+        "default_effort": "medium",
     }
     assert (await local.get("/healthz")).json()["provider"] == "chatgpt"
 
