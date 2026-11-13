@@ -102,7 +102,7 @@ async def test_written_file_streams_as_a_versioned_artifact_and_persists(client:
         return [e for e in events if e["type"] == "artifact"]
 
     first = await client.post(
-        "/api/agent", json={"messages": [{"role": "user", "content": "please write a note"}]}
+        "/api/agent", json={"message": {"content": "please write a note"}}
     )
     session_id = first.headers["x-session-id"]
     [art] = artifacts(first.text)
@@ -112,7 +112,7 @@ async def test_written_file_streams_as_a_versioned_artifact_and_persists(client:
         "/api/agent",
         json={
             "session_id": session_id,
-            "messages": [{"role": "user", "content": "please write a note again"}],
+            "message": {"content": "please write a note again"},
         },
     )
     assert [a["version"] for a in artifacts(second.text)] == [2]

@@ -14,20 +14,23 @@ our architecture doesn't have the concept:
   so the "trailing added tool tokens" component tau computes doesn't apply.
 - Mid-loop overflow recovery (tau catches a context-overflow provider error
   and retries after compacting). We only compact *before* a turn starts
-  (see ``maybe_compact_history``, called from app/main.py). A turn that
+  (see ``compact_if_needed``, called from app/main.py). A turn that
   overflows despite that check will fail normally rather than auto-retry -
   a deliberate scope decision, not an oversight, documented here so it's
   easy to revisit.
-- Tau's persisted, branchable "context entries" - we compact a plain
-  ``list[AgentMessage]`` directly.
+- Tau's persisted, branchable "context entries". Instead, the session keeps
+  the full transcript plus a list of compaction records (summary and where
+  the kept messages start; see app/sessions), and rebuilds the model's
+  context from the latest one. The user's history is never rewritten.
 """
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
+from dataclasses import dataclass
 
 from brain.messages import (
-    COMPACTION_SUMMARY_PREFIX,
     AgentMessage,
     AssistantMessage,
     ThinkingContent,
@@ -46,9 +49,10 @@ SUMMARY_MESSAGE_CHAR_LIMIT = 500
 DEFAULT_COMPACTION_RESERVE_TOKENS = 16_384
 DEFAULT_COMPACTION_KEEP_RECENT_TOKENS = 20_000
 
-__all__ = [
-    "COMPACTION_SUMMARY_PREFIX",  # re-exported: defined in app.messages, see there for why
-]
+# Starts the synthetic user message that stands in for compacted history in
+# the model's context (app/sessions builds it from the latest compaction).
+# Compaction is an app concern, so brain/ never sees this as anything but text.
+COMPACTION_SUMMARY_PREFIX = "Previous conversation summary:\n"
 
 SUMMARIZATION_SYSTEM_PROMPT = (
     "You are a context summarization assistant. Your task is to read a conversation "
@@ -226,10 +230,14 @@ def summarize_messages_for_compaction(messages: tuple[AgentMessage, ...]) -> str
     """
     if not messages:
         return "No prior messages."
-    lines = [f"Automatically compacted {len(messages)} prior message(s)."]
-    for index, message in enumerate(messages, start=1):
+    # A previous summary is carried over whole: truncating it like the other
+    # messages would throw away most of what earlier compactions kept.
+    previous, new_messages = _split_previous_compaction_summary(messages)
+    lines = [f"Automatically compacted {len(new_messages)} prior message(s)."]
+    for index, message in enumerate(new_messages, start=1):
         lines.append(f"{index}. {_message_text(message)}")
-    return "\n".join(lines)
+    text = "\n".join(lines)
+    return f"{previous.rstrip()}\n\n{text}" if previous else text
 
 
 def build_compaction_summary_prompt(messages: tuple[AgentMessage, ...]) -> str:
@@ -405,16 +413,30 @@ async def _generate_summary_text(
     return summarize_messages_for_compaction(messages_to_summarize)
 
 
-async def maybe_compact_history(
-    history: list[AgentMessage],
+@dataclass(frozen=True, slots=True)
+class ContextCompaction:
+    """A decision to compact: the summary, and where the kept messages start.
+
+    ``kept_from`` indexes the context that was passed in. The caller records
+    this against its own full transcript (app/sessions), which is never
+    rewritten; only the context sent to the model gets shorter.
+    """
+
+    summary: str
+    kept_from: int
+
+
+async def compact_if_needed(
+    context: Sequence[AgentMessage],
     *,
     provider: ModelProvider,
     system: str,
-    tools: list[AgentTool],
+    tools: Sequence[AgentTool],
     context_window_tokens: int,
-) -> list[AgentMessage]:
-    """Compact ``history`` in place (returned as a new list) if it's grown
-    past the auto-compaction threshold for the configured context window.
+) -> ContextCompaction | None:
+    """Summarise the older part of ``context`` if it's grown past the
+    auto-compaction threshold for the configured context window, or return
+    None when it fits or there is no safe place to split it.
 
     Called once, before a turn starts (app/main.py) - see this module's
     docstring for what tau does that this deliberately doesn't (mid-loop
@@ -423,18 +445,24 @@ async def maybe_compact_history(
     """
     threshold = auto_compaction_threshold_for_context_window(context_window_tokens)
     if threshold is None:
-        return history
+        return None
 
-    current = estimate_context_tokens(system=system, messages=tuple(history), tools=tuple(tools))
+    messages = tuple(context)
+    current = estimate_context_tokens(system=system, messages=messages, tools=tuple(tools))
     if current <= threshold:
-        return history
+        return None
 
-    plan = build_recent_preserving_compaction_plan(tuple(history))
+    plan = build_recent_preserving_compaction_plan(messages)
     if plan is None:
         # Not enough history to find a safe boundary (e.g. one huge turn) -
         # nothing sensible to do here; let the turn proceed and, if it
         # genuinely overflows, fail normally rather than force a bad split.
-        return history
+        return None
+    previous, new_messages = _split_previous_compaction_summary(plan.messages_to_summarize)
+    if previous is not None and not new_messages:
+        # Only the previous summary falls before the boundary: re-summarising
+        # it alone can't shrink the context, so same as no safe boundary.
+        return None
 
     summary = await _generate_summary_text(provider, plan.messages_to_summarize)
     logger.info(
@@ -443,5 +471,4 @@ async def maybe_compact_history(
         current,
         len(plan.kept_suffix),
     )
-    summary_message = UserMessage(content=COMPACTION_SUMMARY_PREFIX + summary)
-    return [summary_message, *plan.kept_suffix]
+    return ContextCompaction(summary=summary, kept_from=len(plan.messages_to_summarize))

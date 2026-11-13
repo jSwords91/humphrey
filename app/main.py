@@ -24,7 +24,7 @@ from app.artifacts import (
     resolve_workspace_file,
     scan_workspace,
 )
-from app.context_window import maybe_compact_history
+from app.context_window import compact_if_needed
 from app.image_processing import (
     ImageProcessingFailure,
     ProcessedImage,
@@ -80,27 +80,26 @@ class ImageAttachment(BaseModel):
     data: str = Field(..., min_length=1, max_length=75_000_000)
 
 
-class ChatMessage(BaseModel):
-    role: Literal["user", "assistant"]
-    # Higher than QueueRequest's 8000 below: the frontend resends the whole
-    # transcript on every turn (frontend/app.js), so this bounds not just a
-    # typed human message but also past ASSISTANT replies - which can run
-    # much longer, e.g. a detailed multi-case-study bid answer. Found live:
-    # a bid-responses skill reply exceeded 8000 chars and then failed
-    # validation on every subsequent turn in that session, since the
-    # oversized message gets resent every time.
+class PromptMessage(BaseModel):
+    """The one new user turn. Everything earlier comes from the stored
+    session, never from the client, so the request stays the same size
+    however long the conversation gets. (The client used to resend the
+    whole transcript, which the server ignored, and a list cap on it broke
+    every session at its 21st message.) 40k characters leaves room for a
+    pasted document."""
+
     content: str = Field(default="", max_length=40_000)
     images: list[ImageAttachment] = Field(default_factory=list, max_length=4)
 
     @model_validator(mode="after")
-    def _require_content_or_images(self) -> ChatMessage:
+    def _require_content_or_images(self) -> PromptMessage:
         if not self.content.strip() and not self.images:
             raise ValueError("content or at least one image is required")
         return self
 
 
 class AgentRequest(BaseModel):
-    messages: list[ChatMessage] = Field(..., min_length=1, max_length=40)
+    message: PromptMessage
     session_id: str | None = Field(default=None, max_length=64)
     # Per-request OpenAI model; must be one of /api/models. Omit for the default.
     model: str | None = Field(default=None, max_length=100)
@@ -116,6 +115,8 @@ class SessionMessageOut(BaseModel):
     role: Literal["user", "assistant", "context_summary"]
     content: str
     ts: int | None = None
+    # URLs of the images attached to a user turn (GET /api/sessions/{id}/images/...).
+    images: list[str] = Field(default_factory=list)
 
 
 class SessionOut(BaseModel):
@@ -234,15 +235,46 @@ async def get_session(session_id: str) -> SessionOut:
     return SessionOut(
         id=session.id,
         messages=[
-            SessionMessageOut(role=m.role, content=m.content, ts=m.ts)  # type: ignore[arg-type]
-            for m in session.ui_chat_messages()
-            if m.role in {"user", "assistant", "context_summary"}
+            SessionMessageOut(
+                role=row.role,
+                content=row.content,
+                ts=row.ts,
+                images=[f"/api/sessions/{session.id}/images/{digest}" for digest in row.images],
+            )
+            for row in session.history_rows()
         ],
         created_at=session.created_at,
         updated_at=session.updated_at,
         title=session.title,
         last_usage=last_usage,
         artifacts=session.artifacts,
+    )
+
+
+_SERVABLE_IMAGE_TYPES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
+
+
+@app.get("/api/sessions/{session_id}/images/{digest}")
+async def get_session_image(session_id: str, digest: str) -> Response:
+    """An image attached in a session. Served only when that session
+    references it. The URL names the image's content, so it never changes
+    and the browser may cache it for good."""
+    if not SAFE_SESSION_ID.match(session_id):
+        raise HTTPException(status_code=422, detail="Invalid session id.")
+    found = await get_session_store().get_image(session_id, digest)
+    if found is None:
+        raise HTTPException(status_code=404, detail="Image not found.")
+    data, mime_type = found
+    return Response(
+        content=data,
+        # What uploads become (app/image_processing.py). Anything else in a
+        # stored record is served as opaque bytes, never as something to run.
+        media_type=mime_type if mime_type in _SERVABLE_IMAGE_TYPES else "application/octet-stream",
+        headers={
+            "Cache-Control": "private, max-age=31536000, immutable",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "sandbox",
+        },
     )
 
 
@@ -319,9 +351,6 @@ def _process_uploaded_images(attachments: list[ImageAttachment]) -> tuple[list[I
 
 @app.post("/api/agent")
 async def agent(body: AgentRequest, request: Request) -> StreamingResponse:
-    if body.messages[-1].role != "user":
-        raise HTTPException(status_code=422, detail="Last message must be from the user.")
-
     store = get_session_store()
     session_id = body.session_id
     if session_id is not None and not SAFE_SESSION_ID.match(session_id):
@@ -334,11 +363,7 @@ async def agent(body: AgentRequest, request: Request) -> StreamingResponse:
         session_id = new_session_id()
         session = Session(id=session_id)
 
-    latest_user = body.messages[-1].content
-    history = list(session.messages)
-    if history and isinstance(history[-1], UserMessage) and history[-1].content == latest_user:
-        history = history[:-1]
-
+    latest_user = body.message.content
     settings = get_settings()
     model = None
     if body.model and active_provider_kind(settings) == "openai":
@@ -346,13 +371,6 @@ async def agent(body: AgentRequest, request: Request) -> StreamingResponse:
             raise HTTPException(status_code=422, detail=f"Unknown model: {body.model}")
         model = body.model
     provider = get_provider(model)
-    history = await maybe_compact_history(
-        history,
-        provider=provider,
-        system=system_prompt(),
-        tools=TOOLS,
-        context_window_tokens=settings.context_window_tokens,
-    )
 
     try:
         expanded = expand_skill_command(latest_user, load_skills())
@@ -360,7 +378,24 @@ async def agent(body: AgentRequest, request: Request) -> StreamingResponse:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     prompt_text = expanded if expanded is not None else latest_user
 
-    image_contents, image_notes = _process_uploaded_images(body.messages[-1].images)
+    # Every check that can reject the request is above this line: the store
+    # may hand back the live session, so nothing changes it before here.
+    last = session.messages[-1] if session.messages else None
+    if isinstance(last, UserMessage) and last.content == latest_user:
+        session.messages.pop()  # a retried turn: don't store the prompt twice
+    history = session.model_context()
+    compaction = await compact_if_needed(
+        history,
+        provider=provider,
+        system=system_prompt(),
+        tools=TOOLS,
+        context_window_tokens=settings.context_window_tokens,
+    )
+    if compaction is not None:
+        session.record_compaction(compaction.summary, kept_from=compaction.kept_from)
+        history = session.model_context()
+
+    image_contents, image_notes = _process_uploaded_images(body.message.images)
     if image_notes:
         notes_text = "\n".join(image_notes)
         prompt_text = f"{prompt_text}\n\n{notes_text}" if prompt_text else notes_text
@@ -404,7 +439,9 @@ async def agent(body: AgentRequest, request: Request) -> StreamingResponse:
                 harness.cancel()
                 harness.append_interrupted_tool_results()
             unregister_active(session_id, harness)
-            session.messages = list(harness.messages)
+            # The harness started from model_context(); append only what this
+            # turn added, so the stored transcript stays complete.
+            session.messages.extend(harness.messages[len(history) :])
             if session.title is None:
                 session.title = await generate_session_title(harness.config.provider, latest_user)
             try:

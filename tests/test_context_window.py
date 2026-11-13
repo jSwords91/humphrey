@@ -11,10 +11,10 @@ from app.context_window import (
     DEFAULT_COMPACTION_RESERVE_TOKENS,
     auto_compaction_threshold_for_context_window,
     build_recent_preserving_compaction_plan,
+    compact_if_needed,
     estimate_context_tokens,
     estimate_message_tokens,
     estimate_text_tokens,
-    maybe_compact_history,
     provider_context_tokens,
     summarize_messages_for_compaction,
 )
@@ -171,7 +171,7 @@ def test_summarize_messages_for_compaction_empty() -> None:
     assert summarize_messages_for_compaction(()) == "No prior messages."
 
 
-# --- maybe_compact_history orchestration --------------------------------------
+# --- compact_if_needed orchestration ------------------------------------------
 
 
 class _FakeSummaryProvider:
@@ -200,54 +200,86 @@ def _long_history(turns: int) -> list:
 
 
 @pytest.mark.asyncio
-async def test_maybe_compact_history_returns_unchanged_below_threshold() -> None:
+async def test_compact_if_needed_returns_none_below_threshold() -> None:
     history = [_user("hi"), _assistant("hello")]
     provider = _FakeSummaryProvider()
-    result = await maybe_compact_history(
+    result = await compact_if_needed(
         history, provider=provider, system="sys", tools=[], context_window_tokens=128_000
     )
-    assert result == history
+    assert result is None
     assert provider.called_with is None
 
 
 @pytest.mark.asyncio
-async def test_maybe_compact_history_compacts_when_over_threshold() -> None:
+async def test_compact_if_needed_summarises_the_prefix_and_keeps_a_clean_suffix() -> None:
     history = _long_history(200)  # comfortably over a tiny configured window
     provider = _FakeSummaryProvider("## Goal\nDo the thing.")
-    result = await maybe_compact_history(
+    result = await compact_if_needed(
         history, provider=provider, system="sys", tools=[], context_window_tokens=5_000
     )
+    assert result is not None
+    assert result.summary == "## Goal\nDo the thing."
     assert provider.called_with is not None
     assert provider.called_with["tools"] == []
-    assert len(result) < len(history)
-    assert isinstance(result[0], UserMessage)
-    assert result[0].content.startswith(COMPACTION_SUMMARY_PREFIX)
-    assert "Do the thing." in result[0].content
+    assert 0 < result.kept_from < len(history)
+    # The kept part starts on a real user turn, and the input is untouched.
+    assert isinstance(history[result.kept_from], UserMessage)
+    assert len(history) == 400
 
 
 @pytest.mark.asyncio
-async def test_maybe_compact_history_falls_back_when_summarization_call_fails() -> None:
+async def test_compact_if_needed_falls_back_when_summarization_call_fails() -> None:
     history = _long_history(200)
-    result = await maybe_compact_history(
+    result = await compact_if_needed(
         history,
         provider=_FailingProvider(),
         system="sys",
         tools=[],
         context_window_tokens=5_000,
     )
-    assert len(result) < len(history)
-    assert isinstance(result[0], UserMessage)
-    assert result[0].content.startswith(COMPACTION_SUMMARY_PREFIX)
-    assert "Automatically compacted" in result[0].content
+    assert result is not None
+    assert result.summary.startswith("Automatically compacted")
 
 
 @pytest.mark.asyncio
-async def test_maybe_compact_history_leaves_history_alone_with_no_safe_boundary() -> None:
+async def test_compact_if_needed_declines_with_no_safe_boundary() -> None:
     # A single oversized message: over threshold, but nothing safe to split.
     history = [_user("word " * 5000)]
     provider = _FakeSummaryProvider()
-    result = await maybe_compact_history(
+    result = await compact_if_needed(
         history, provider=provider, system="sys", tools=[], context_window_tokens=1_000
     )
-    assert result == history
+    assert result is None
     assert provider.called_with is None
+
+
+@pytest.mark.asyncio
+async def test_compact_if_needed_does_not_re_summarise_a_summary_on_its_own() -> None:
+    """When the kept turns alone are over the threshold, the boundary lands
+    straight after the previous summary. Summarising just that summary can't
+    shrink anything, so it's skipped rather than costing a model call."""
+    filler = "word " * 20_000  # one ~25k-token turn, over keep-recent on its own
+    history = [
+        _user(COMPACTION_SUMMARY_PREFIX + "earlier work"),
+        _user(f"big turn {filler}"),
+        _assistant("ok"),
+    ]
+    provider = _FakeSummaryProvider()
+    result = await compact_if_needed(
+        history, provider=provider, system="sys", tools=[], context_window_tokens=5_000
+    )
+    assert result is None
+    assert provider.called_with is None
+
+
+def test_the_fallback_summary_keeps_a_previous_summary_whole() -> None:
+    previous = "## Goal\n" + "keep every word of this. " * 100  # well over 500 chars
+    messages = (
+        _user(COMPACTION_SUMMARY_PREFIX + previous),
+        _user("new question"),
+        _assistant("new answer"),
+    )
+    text = summarize_messages_for_compaction(messages)
+    assert text.startswith(previous.rstrip())
+    assert "Automatically compacted 2 prior message(s)." in text
+    assert "new question" in text

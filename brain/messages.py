@@ -215,58 +215,6 @@ def message_from_dict(data: dict[str, Any]) -> AgentMessage | None:
     return None
 
 
-# Marks a synthetic UserMessage injected by app.context_window's
-# auto-compaction as standing in for summarized history, not something the
-# user actually typed. Defined here (not in context_window.py) so ui_messages
-# can distinguish it without a circular import.
-COMPACTION_SUMMARY_PREFIX = "Previous conversation summary:\n"
-
-
-def ui_messages(messages: list[AgentMessage]) -> list[dict[str, Any]]:
-    """Project transcript to user/assistant text pairs for the web UI.
-
-    Each row carries its message's ``ts`` (ms) so the UI can interleave
-    other timestamped items, such as artefacts, in order.
-    """
-    out: list[dict[str, Any]] = []
-    for message in messages:
-        if isinstance(message, UserMessage):
-            text = message.text.strip()
-            image_count = len(message.images)
-            if image_count and not text:
-                # An image-only turn (no caption) still needs a visible row,
-                # or it silently vanishes from session history/UI — the
-                # actual image bytes aren't replayed here (see module
-                # docstring on ImageContent: kept out of the UI projection
-                # to avoid bloating every session-list/reload payload).
-                noun = "image" if image_count == 1 else "images"
-                out.append({"role": "user", "content": f"(sent {image_count} {noun})", "ts": message.timestamp_ms})
-                continue
-            if not text:
-                continue
-            if text.startswith(COMPACTION_SUMMARY_PREFIX):
-                out.append(
-                    {
-                        "role": "context_summary",
-                        "content": text.removeprefix(COMPACTION_SUMMARY_PREFIX),
-                        "ts": message.timestamp_ms,
-                    }
-                )
-            else:
-                # Don't let a caption's text silently hide that images were
-                # also attached to this turn — same "no dropped information"
-                # principle as elsewhere in this app's history projections.
-                if image_count:
-                    noun = "image" if image_count == 1 else "images"
-                    text = f"{text}\n(+{image_count} {noun} attached)"
-                out.append({"role": "user", "content": text, "ts": message.timestamp_ms})
-        elif isinstance(message, AssistantMessage):
-            text = message.text.strip()
-            if text and message.stop_reason not in {"error", "aborted"}:
-                out.append({"role": "assistant", "content": text, "ts": message.timestamp_ms})
-    return out
-
-
 def assistant_from_stream(
     *,
     text: str,

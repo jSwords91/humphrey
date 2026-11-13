@@ -1404,16 +1404,18 @@
       wrap.append(body);
     }
 
-    // Live-turn-only preview (see openSession's reload path): the actual
-    // image bytes aren't round-tripped back from the server on a session
-    // reload, so this only ever renders for the message just sent in this
-    // tab, from local blob/data URLs - never persisted or refetched.
+    // Local preview URLs for a message just sent; for a reopened chat, the
+    // server's image URLs, which never change, so the browser caches them.
     if (kind === "user" && opts.images && opts.images.length > 0) {
       const gallery = document.createElement("div");
       gallery.className = "msg-user-images";
       for (const url of opts.images) {
         const img = document.createElement("img");
         img.src = url;
+        img.loading = "lazy";
+        img.decoding = "async";
+        // Its height is unknown until it loads; stay at the bottom if pinned.
+        img.addEventListener("load", pinToBottom, { once: true });
         img.alt = "Attached image";
         gallery.append(img);
       }
@@ -2277,10 +2279,11 @@
         return;
       }
       const data = await res.json();
-      const rows = (data.messages || []).filter((m) => m && m.content);
-      // Only user/assistant turns are ever resent to /api/agent (ChatMessage
-      // on the wire has no "context_summary" role) - a context-summary row
-      // is rendered below but kept out of this array.
+      const rows = (data.messages || []).filter(
+        (m) => m && (m.content || (Array.isArray(m.images) && m.images.length > 0)),
+      );
+      // `messages` counts the user/assistant turns shown in the UI; a
+      // context-summary row is rendered below but kept out of it.
       messages = rows.filter((m) => m.role === "user" || m.role === "assistant");
       sessionId = id;
       localStorage.setItem(SESSION_KEY, id);
@@ -2319,7 +2322,10 @@
           } else {
             charsOut += msg.content.length;
           }
-          el = appendMessage(msg.role, msg.content, { animate: false });
+          el = appendMessage(msg.role, msg.content, {
+            animate: false,
+            images: Array.isArray(msg.images) ? msg.images : [],
+          });
         }
         if (el && typeof msg.ts === "number") placed.push({ ts: msg.ts, el });
       }
@@ -2813,16 +2819,19 @@
           "Content-Type": "application/json",
           Accept: "text/event-stream",
         },
+        // Only the new turn: the server rebuilds everything earlier from the
+        // stored session, so `messages` here is UI state, never resent.
         body: JSON.stringify({
-          messages,
+          message: {
+            content: pushedMessage.content,
+            ...(pushedMessage.images ? { images: pushedMessage.images } : {}),
+          },
           session_id: sessionId,
           ...(selectedModel ? { model: selectedModel } : {}),
         }),
         signal: controller.signal,
       });
-      // Images are only ever read from the *last* message server-side
-      // (app/main.py's /api/agent) - strip them here so the next turn's
-      // full-transcript resend doesn't re-upload the same bytes forever.
+      // The bytes have been sent; don't keep them in the UI's message list.
       delete pushedMessage.images;
 
       const headerSession = res.headers.get("X-Session-Id");

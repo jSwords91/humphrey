@@ -63,7 +63,7 @@ async def test_frontend_assets_bust_and_revalidate(client: AsyncClient) -> None:
 async def test_plain_chat_sse_sequence(client: AsyncClient) -> None:
     response = await client.post(
         "/api/agent",
-        json={"messages": [{"role": "user", "content": "hello there"}]},
+        json={"message": {"content": "hello there"}},
     )
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/event-stream")
@@ -82,33 +82,67 @@ async def test_plain_chat_sse_sequence(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_resending_a_long_past_assistant_reply_does_not_422(client: AsyncClient) -> None:
-    """Regression test: the frontend resends the whole transcript every turn
-    (frontend/app.js), including past ASSISTANT replies - which can run much
-    longer than a typed human message (e.g. a detailed bid-response skill
-    answer). ChatMessage.content used to cap at 8000 chars, sized for human
-    input, and a longer assistant reply then 422'd every subsequent turn in
-    that session since the oversized message gets resent every time.
+async def test_a_long_session_keeps_working(client: AsyncClient) -> None:
+    """Regression test: the client used to resend the whole transcript, the
+    request capped that list at 40 messages, and so every session failed
+    with a 422 from its 21st turn, for good. Only the new turn is sent now,
+    and the history comes from the stored session.
     """
-    long_reply = "x" * 20_000
+    session_id = None
+    for i in range(25):
+        response = await client.post(
+            "/api/agent",
+            json={"message": {"content": f"turn {i}"}, "session_id": session_id},
+        )
+        assert response.status_code == 200, f"turn {i}: {response.text[:200]}"
+        session_id = response.headers["x-session-id"]
+
+    from brain.messages import UserMessage
+    from app.sessions import get_session_store
+
+    session = await get_session_store().get(session_id)
+    assert session is not None
+    user_turns = [m.text for m in session.messages if isinstance(m, UserMessage)]
+    assert user_turns == [f"turn {i}" for i in range(25)]
+
+
+@pytest.mark.asyncio
+async def test_long_past_replies_do_not_affect_later_requests(client: AsyncClient) -> None:
+    """A long assistant reply lives in the stored session, never in a
+    request, so it can't push a later request over any size limit."""
+    from brain.messages import AssistantMessage, UserMessage
+    from app.sessions import Session, get_session_store
+
+    session_id = "longreplysession1"
+    await get_session_store().save(
+        Session(
+            id=session_id,
+            messages=[
+                UserMessage(content="give me a detailed answer"),
+                AssistantMessage(content="x" * 200_000, model="mock"),
+            ],
+        )
+    )
     response = await client.post(
         "/api/agent",
-        json={
-            "messages": [
-                {"role": "user", "content": "give me a detailed answer"},
-                {"role": "assistant", "content": long_reply},
-                {"role": "user", "content": "thanks, one more question"},
-            ]
-        },
+        json={"message": {"content": "thanks, one more question"}, "session_id": session_id},
     )
     assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_the_old_transcript_payload_is_rejected(client: AsyncClient) -> None:
+    response = await client.post(
+        "/api/agent", json={"messages": [{"role": "user", "content": "hello"}]}
+    )
+    assert response.status_code == 422
 
 
 @pytest.mark.asyncio
 async def test_tool_turn_bash(client: AsyncClient) -> None:
     response = await client.post(
         "/api/agent",
-        json={"messages": [{"role": "user", "content": "list files please"}]},
+        json={"message": {"content": "list files please"}},
     )
     assert response.status_code == 200
     events = _parse_sse(response.text)
@@ -136,7 +170,7 @@ async def test_write_tool_writes_into_the_workspace(client: AsyncClient) -> None
 
     response = await client.post(
         "/api/agent",
-        json={"messages": [{"role": "user", "content": "please write a note"}]},
+        json={"message": {"content": "please write a note"}},
     )
     assert response.status_code == 200
     events = _parse_sse(response.text)
@@ -155,7 +189,7 @@ async def test_write_tool_writes_into_the_workspace(client: AsyncClient) -> None
 async def test_mermaid_skill_triggers_via_tool_call(client: AsyncClient) -> None:
     response = await client.post(
         "/api/agent",
-        json={"messages": [{"role": "user", "content": "show me the architecture"}]},
+        json={"message": {"content": "show me the architecture"}},
     )
     assert response.status_code == 200
     events = _parse_sse(response.text)
@@ -174,7 +208,7 @@ async def test_mermaid_skill_triggers_via_tool_call(client: AsyncClient) -> None
 async def test_explicit_skill_command_expands_into_prompt(client: AsyncClient) -> None:
     response = await client.post(
         "/api/agent",
-        json={"messages": [{"role": "user", "content": "/skill:mermaid-diagrams check it out"}]},
+        json={"message": {"content": "/skill:mermaid-diagrams check it out"}},
     )
     assert response.status_code == 200
     session_id = response.headers["x-session-id"]
@@ -194,7 +228,7 @@ async def test_explicit_skill_command_expands_into_prompt(client: AsyncClient) -
 async def test_explicit_skill_command_unknown_skill_returns_422(client: AsyncClient) -> None:
     response = await client.post(
         "/api/agent",
-        json={"messages": [{"role": "user", "content": "/skill:does-not-exist"}]},
+        json={"message": {"content": "/skill:does-not-exist"}},
     )
     assert response.status_code == 422
 
@@ -203,7 +237,7 @@ async def test_explicit_skill_command_unknown_skill_returns_422(client: AsyncCli
 async def test_session_persists_full_transcript(client: AsyncClient) -> None:
     response = await client.post(
         "/api/agent",
-        json={"messages": [{"role": "user", "content": "list files please"}]},
+        json={"message": {"content": "list files please"}},
     )
     session_id = response.headers["x-session-id"]
     events = _parse_sse(response.text)
@@ -233,7 +267,7 @@ async def test_session_persists_full_transcript(client: AsyncClient) -> None:
 async def test_new_session_gets_auto_named(client: AsyncClient) -> None:
     response = await client.post(
         "/api/agent",
-        json={"messages": [{"role": "user", "content": "my app isn't working, help me diagnose it"}]},
+        json={"message": {"content": "my app isn't working, help me diagnose it"}},
     )
     session_id = response.headers["x-session-id"]
 
@@ -251,7 +285,7 @@ async def test_session_title_is_not_overwritten_on_later_turns(client: AsyncClie
 
     first = await client.post(
         "/api/agent",
-        json={"messages": [{"role": "user", "content": "hello there"}]},
+        json={"message": {"content": "hello there"}},
     )
     session_id = first.headers["x-session-id"]
     session = await get_session_store().get(session_id)
@@ -262,7 +296,7 @@ async def test_session_title_is_not_overwritten_on_later_turns(client: AsyncClie
     await client.post(
         "/api/agent",
         json={
-            "messages": [{"role": "user", "content": "a completely different follow-up question"}],
+            "message": {"content": "a completely different follow-up question"},
             "session_id": session_id,
         },
     )
@@ -275,14 +309,25 @@ async def test_session_title_is_not_overwritten_on_later_turns(client: AsyncClie
 async def test_agent_endpoint_auto_compacts_a_large_history(
     client: AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """End-to-end: a pre-existing session with enough history to exceed the
-    (test-forced, tiny) context window must come back compacted after the
-    next turn - a single summary message replacing the old prefix, not the
-    original wall of history.
+    """End-to-end: a session whose history exceeds the (test-forced, tiny)
+    context window is compacted for the model, while the stored transcript
+    and what the user sees keep every message.
     """
+    import app.main
     from brain.messages import AssistantMessage, TextContent, UserMessage
     from app.sessions import Session, get_session_store
     from app.settings import get_settings, reset_settings_for_tests
+    from providers.mock import MockProvider
+
+    seen: list[list] = []  # the context of each agent-loop model call
+
+    class RecordingProvider(MockProvider):
+        def stream(self, messages, tools, *, system, signal=None):
+            if tools:  # the summary and title calls have no tools
+                seen.append(list(messages))
+            return super().stream(messages, tools, system=system, signal=signal)
+
+    monkeypatch.setattr(app.main, "get_provider", lambda model=None: RecordingProvider())
 
     monkeypatch.setenv("MODEL_CONTEXT_WINDOW_TOKENS", "2000")
     reset_settings_for_tests()
@@ -301,12 +346,12 @@ async def test_agent_endpoint_auto_compacts_a_large_history(
 
     session_id = "compactionregression1"
     store = get_session_store()
-    await store.save(Session(id=session_id, messages=big_history))
+    await store.save(Session(id=session_id, messages=list(big_history)))
 
     response = await client.post(
         "/api/agent",
         json={
-            "messages": [{"role": "user", "content": "one more question"}],
+            "message": {"content": "one more question"},
             "session_id": session_id,
         },
     )
@@ -314,22 +359,45 @@ async def test_agent_endpoint_auto_compacts_a_large_history(
 
     session = await store.get(session_id)
     assert session is not None
-    assert len(session.messages) < len(big_history)
-    first = session.messages[0]
-    assert isinstance(first, UserMessage)
-    assert first.content.startswith("Previous conversation summary:\n")
+    # The transcript is intact: the whole old history, then this turn.
+    assert session.messages[: len(big_history)] == big_history
+    assert session.messages[len(big_history)].text == "one more question"
+    assert len(session.compactions) == 1
 
-    # The UI-facing projection must not disguise the summary as a real user
-    # turn (see frontend/app.js's appendContextSummary) - it's a distinct
-    # role, and the raw prefix is stripped since the frontend supplies its
-    # own label.
+    # The model saw the summary and the kept tail, not the whole history.
+    context = seen[0]
+    assert context[0].text.startswith("Previous conversation summary:\n")
+    assert len(context) < len(big_history)
+    assert context[-1].text == "one more question"
+
+    # The user still sees every turn, with the summary shown where the
+    # compaction happened, and every row in time order.
     stored = await client.get(f"/api/sessions/{session_id}")
     assert stored.status_code == 200
-    ui_messages = stored.json()["messages"]
-    assert ui_messages[0]["role"] == "context_summary"
-    assert not ui_messages[0]["content"].startswith("Previous conversation summary:")
-    assert "user" in [m["role"] for m in ui_messages]
-    assert "assistant" in [m["role"] for m in ui_messages]
+    rows = stored.json()["messages"]
+    user_rows = [m["content"] for m in rows if m["role"] == "user"]
+    assert user_rows[: len(big_history) // 2] == [m.text.strip() for m in big_history[::2]]
+    assert [m["role"] for m in rows].count("context_summary") == 1
+    summary_at = next(i for i, m in enumerate(rows) if m["role"] == "context_summary")
+    assert rows[summary_at + 1]["content"] == "one more question"
+    assert not rows[summary_at]["content"].startswith("Previous conversation summary:")
+    assert [m["ts"] for m in rows] == sorted(m["ts"] for m in rows)
+
+    # A second turn builds on the stored record, and still loses nothing.
+    response = await client.post(
+        "/api/agent",
+        json={"message": {"content": "and another"}, "session_id": session_id},
+    )
+    assert response.status_code == 200
+    session = await store.get(session_id)
+    assert session is not None
+    assert session.messages[: len(big_history)] == big_history
+    assert [m.text for m in session.messages if isinstance(m, UserMessage)][-2:] == [
+        "one more question",
+        "and another",
+    ]
+    assert seen[1][0].text.startswith("Previous conversation summary:\n")
+    assert seen[1][-1].text == "and another"
 
 
 @pytest.mark.asyncio
@@ -337,9 +405,7 @@ async def test_agent_endpoint_accepts_an_image_only_message(client: AsyncClient)
     response = await client.post(
         "/api/agent",
         json={
-            "messages": [
-                {"role": "user", "content": "", "images": [{"data": _png_base64()}]}
-            ]
+            "message": {"content": "", "images": [{"data": _png_base64()}]}
         },
     )
     assert response.status_code == 200
@@ -356,8 +422,13 @@ async def test_agent_endpoint_accepts_an_image_only_message(client: AsyncClient)
     assert first.images[0].mime_type == "image/png"
 
     stored = await client.get(f"/api/sessions/{session_id}")
-    ui_rows = stored.json()["messages"]
-    assert "1 image" in ui_rows[0]["content"]
+    [row] = [r for r in stored.json()["messages"] if r["role"] == "user"]
+    assert row["content"] == ""
+    [url] = row["images"]
+    image = await client.get(url)
+    assert image.status_code == 200
+    assert image.headers["content-type"] == "image/png"
+    assert base64.b64decode(first.images[0].data) == image.content
 
 
 @pytest.mark.asyncio
@@ -365,13 +436,7 @@ async def test_agent_endpoint_accepts_text_plus_image(client: AsyncClient) -> No
     response = await client.post(
         "/api/agent",
         json={
-            "messages": [
-                {
-                    "role": "user",
-                    "content": "what is this?",
-                    "images": [{"data": _png_base64()}],
-                }
-            ]
+            "message": {"content": "what is this?", "images": [{"data": _png_base64()}]}
         },
     )
     assert response.status_code == 200
@@ -400,9 +465,7 @@ async def test_agent_endpoint_degrades_an_unsupported_image_to_a_visible_note(
     response = await client.post(
         "/api/agent",
         json={
-            "messages": [
-                {"role": "user", "content": "check this out", "images": [{"data": garbage}]}
-            ]
+            "message": {"content": "check this out", "images": [{"data": garbage}]}
         },
     )
     assert response.status_code == 200
@@ -421,5 +484,5 @@ async def test_agent_endpoint_degrades_an_unsupported_image_to_a_visible_note(
 
 @pytest.mark.asyncio
 async def test_chat_message_requires_content_or_at_least_one_image(client: AsyncClient) -> None:
-    response = await client.post("/api/agent", json={"messages": [{"role": "user", "content": ""}]})
+    response = await client.post("/api/agent", json={"message": {"content": ""}})
     assert response.status_code == 422

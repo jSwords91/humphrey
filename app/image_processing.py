@@ -13,6 +13,9 @@ and correct for uploads too.
 
 from __future__ import annotations
 
+import base64
+import binascii
+import hashlib
 import warnings
 from dataclasses import dataclass
 from io import BytesIO
@@ -236,3 +239,18 @@ def _is_valid_bmp_header(data: bytes) -> bool:
 
 def _format_size(size: int) -> str:
     return f"{size / (1024 * 1024):.1f}MB"
+
+
+def image_bytes(data_b64: str) -> bytes | None:
+    """The bytes of a processed image's base64 (``ImageContent.data``), or
+    None if it isn't valid base64."""
+    try:
+        return base64.b64decode(data_b64, validate=True)
+    except (binascii.Error, ValueError):
+        return None
+
+
+def image_digest(data: bytes) -> str:
+    """An image's identity: the SHA-256 of its bytes. Session storage keeps
+    each image once under it, and the UI fetches images by it."""
+    return hashlib.sha256(data).hexdigest()
