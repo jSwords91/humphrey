@@ -121,6 +121,96 @@ async def test_edit_preserves_crlf_line_endings(tmp_path: Path) -> None:
     assert (tmp_path / "f.txt").read_bytes() == b"line1\r\nchanged\r\n"
 
 
+@pytest.fixture
+def workspace(tmp_path: Path) -> Path:
+    """A workspace with a secret beside it, the way .env sits beside workspace/."""
+    (tmp_path / ".env").write_text("OPENAI_API_KEY=sk-secret\n")
+    root = tmp_path / "workspace"
+    root.mkdir()
+    (root / "notes.txt").write_text("hello\n")
+    return root
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["../.env", "{outside}/.env"])
+async def test_read_refuses_paths_outside_the_workspace(workspace: Path, path: str) -> None:
+    read = create_read_tool(cwd=workspace)
+    result = await read.execute("c1", {"path": path.format(outside=workspace.parent)})
+    assert result.is_error is True
+    assert "outside the working directory" in result.text
+    assert "sk-secret" not in result.text
+
+
+@pytest.mark.asyncio
+async def test_read_refuses_a_symlink_out_of_the_workspace(workspace: Path) -> None:
+    (workspace / "link").symlink_to(workspace.parent / ".env")
+    result = await create_read_tool(cwd=workspace).execute("c1", {"path": "link"})
+    assert result.is_error is True
+    assert "sk-secret" not in result.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["../escaped.txt", "{outside}/escaped.txt"])
+async def test_write_refuses_paths_outside_the_workspace(workspace: Path, path: str) -> None:
+    write = create_write_tool(cwd=workspace)
+    result = await write.execute(
+        "c1", {"path": path.format(outside=workspace.parent), "content": "x"}
+    )
+    assert result.is_error is True
+    assert not (workspace.parent / "escaped.txt").exists()
+
+
+@pytest.mark.asyncio
+async def test_edit_refuses_paths_outside_the_workspace(workspace: Path) -> None:
+    edit = create_edit_tool(cwd=workspace)
+    result = await edit.execute(
+        "c1", {"path": "../.env", "edits": [{"oldText": "sk-secret", "newText": "gone"}]}
+    )
+    assert result.is_error is True
+    assert (workspace.parent / ".env").read_text() == "OPENAI_API_KEY=sk-secret\n"
+
+
+@pytest.mark.asyncio
+async def test_absolute_paths_inside_the_workspace_still_work(workspace: Path) -> None:
+    result = await create_read_tool(cwd=workspace).execute(
+        "c1", {"path": str(workspace / "notes.txt")}
+    )
+    assert result.is_error is False
+    assert result.text == "hello\n"
+
+
+@pytest.mark.asyncio
+async def test_read_may_open_its_extra_read_roots(workspace: Path) -> None:
+    skills = workspace.parent / "skills"
+    skills.mkdir()
+    (skills / "SKILL.md").write_text("# skill\n")
+    read = create_read_tool(cwd=workspace, read_roots=(skills,))
+    result = await read.execute("c1", {"path": str(skills / "SKILL.md")})
+    assert result.is_error is False
+    assert result.text == "# skill\n"
+
+
+@pytest.mark.asyncio
+async def test_the_active_read_tool_can_open_a_skill() -> None:
+    from app.skills import SKILLS_DIR
+
+    read = next(t for t in TOOLS if t.name == "read")
+    skill = next(SKILLS_DIR.glob("*/SKILL.md"))
+    result = await read.execute("c1", {"path": str(skill)})
+    assert result.is_error is False
+
+
+@pytest.mark.asyncio
+async def test_truncated_bash_output_can_be_read_back(workspace: Path) -> None:
+    bash = create_bash_tool(cwd=workspace)
+    result = await bash.execute("c1", {"command": "seq 1 3000", "description": "long"})
+    saved = result.text.rsplit("Full output: ", 1)[1].rstrip("]").strip()
+    read = create_read_tool(cwd=workspace)
+    back = await read.execute("c2", {"path": saved, "offset": 3000, "limit": 1})
+    assert back.is_error is False
+    assert back.text.startswith("3000\n")
+
+
 @pytest.mark.asyncio
 async def test_bash_returns_stdout_and_exit_code(tmp_path: Path) -> None:
     bash = create_bash_tool(cwd=tmp_path)
