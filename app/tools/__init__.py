@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from app.settings import get_settings
+from app.skills import SKILLS_DIR
 from app.tools.ask_user_question import create_ask_user_question_tool
 from app.tools.tau_ported import create_coding_tools
 from app.ui_bridge import NullUiBridge, UiBridge
@@ -24,7 +25,9 @@ __all__ = ["TOOLS", "WORKSPACE_DIR", "tool_label", "tools_for_run"]
 WORKSPACE_DIR = Path(get_settings().workspace_dir).resolve()
 WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
 
-CODING_TOOLS: list[AgentTool] = create_coding_tools(cwd=WORKSPACE_DIR)
+# The file tools stay inside the workspace; read may also open the skills,
+# which the prompt lists by absolute path.
+CODING_TOOLS: list[AgentTool] = create_coding_tools(cwd=WORKSPACE_DIR, read_roots=(SKILLS_DIR,))
 
 
 def tools_for_run(bridge: UiBridge) -> list[AgentTool]:
