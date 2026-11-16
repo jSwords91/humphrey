@@ -23,7 +23,8 @@ from app.tools.tau_ported import (
 def test_active_tools_are_the_tau_tools_rooted_in_the_workspace() -> None:
     from app.tools import WORKSPACE_DIR
 
-    assert [t.name for t in TOOLS] == [t.name for t in create_coding_tools()]
+    coding = [t.name for t in create_coding_tools()]
+    assert [t.name for t in TOOLS][: len(coding)] == coding
     assert WORKSPACE_DIR.is_dir()
     assert WORKSPACE_DIR != Path(__file__).resolve().parent.parent  # never the repo root
 

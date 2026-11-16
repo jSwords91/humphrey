@@ -1,5 +1,6 @@
 """The transcript as the web UI's history view shows it: one row per visible
-user or assistant turn, plus a row for each context summary.
+user or assistant turn, a row for each context summary, and a row for each
+ask_user_question card with its answer.
 
 A projection for one frontend, so it lives here beside the SSE renderer and
 not in brain/: brain/ keeps the full typed transcript and knows nothing
@@ -12,24 +13,27 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 from app.context_window import COMPACTION_SUMMARY_PREFIX
 from app.image_processing import image_bytes, image_digest
-from brain.messages import AgentMessage, AssistantMessage, UserMessage
+from app.tools.ask_user_question import NAME as ASK_USER_QUESTION
+from brain.messages import AgentMessage, AssistantMessage, ToolResultMessage, UserMessage
 
 UNSHOWABLE_IMAGE_NOTE = "(An image was attached here, but it can't be shown.)"
 
 
 @dataclass(slots=True)
 class HistoryRow:
-    role: Literal["user", "assistant", "context_summary"]
+    role: Literal["user", "assistant", "context_summary", "question"]
     content: str
     # Milliseconds. Rows are in time order, which the UI relies on to put
     # artefacts back where they happened.
     ts: int
     # Digests of the images attached to a user turn, in order.
     images: tuple[str, ...] = ()
+    # A question card's questions, status and answers (the tool's details).
+    question: dict[str, Any] | None = None
 
 
 def history_rows(
@@ -47,6 +51,10 @@ def history_rows(
             text = message.text.strip()
             if text and message.stop_reason not in {"error", "aborted"}:
                 rows.append(HistoryRow("assistant", text, message.timestamp_ms))
+        elif isinstance(message, ToolResultMessage) and message.tool_name == ASK_USER_QUESTION:
+            row = _question_row(message)
+            if row is not None:
+                rows.append(row)
 
     for created_ms, text in summaries:
         at = next((i for i, r in enumerate(rows) if r.ts >= created_ms), len(rows))
@@ -76,6 +84,13 @@ def _user_row(message: UserMessage) -> HistoryRow | None:
     if not text and not digests:
         return None
     return HistoryRow("user", text, message.timestamp_ms, tuple(digests))
+
+
+def _question_row(message: ToolResultMessage) -> HistoryRow | None:
+    details = message.details
+    if not isinstance(details, dict) or not isinstance(details.get("questions"), list):
+        return None  # a call refused before it reached the user
+    return HistoryRow("question", message.text, message.timestamp_ms, question=details)
 
 
 def _order_inline_summaries(rows: list[HistoryRow]) -> None:

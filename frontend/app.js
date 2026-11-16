@@ -137,7 +137,7 @@
   /** @param {"connecting" | "ready" | "working"} status */
   function setStatus(status) {
     stage.dataset.status = status;
-    const labels = { connecting: "Connecting", ready: "Ready", working: "Working" };
+    const labels = { connecting: "Connecting", ready: "Ready", working: "Working", waiting: "Needs you" };
     if (statusLabel) {
       statusLabel.textContent = labels[status];
     }
@@ -2300,7 +2300,8 @@
    */
   function finalizeStuckTools(state) {
     for (const card of state.toolEls.values()) {
-      if (card.el.dataset.state === "running") {
+      if (card.el.dataset.state === "running" || card.el.dataset.state === "waiting") {
+        card.el.closest(".tool-cluster")?.removeAttribute("data-waiting");
         card.el.dataset.state = "stopped";
         card.meta.textContent = "stopped";
         card.toggle.setAttribute(
@@ -2317,6 +2318,550 @@
         cluster.meta.textContent = "stopped";
         stopDotPulse(cluster.summary);
       }
+    }
+  }
+
+  // --- Question cards (ask_user_question) -----------------------------------
+  // The model asks; the app always adds "Something else" and Skip. One pick
+  // answers a single question. The card waits on the run (`pendingAsk`) until
+  // the tool ends, then settles to a short record of the answer.
+
+  /** @type {any} */
+  let pendingAsk = null;
+  let askSeq = 0;
+  const baseTitle = document.title;
+  const composerPlaceholder = question.getAttribute("placeholder") || "";
+
+  /** @param {string} cls @param {string} text */
+  function askButton(cls, text) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = cls;
+    btn.textContent = text;
+    return btn;
+  }
+
+  /**
+   * @param {number} key
+   * @param {string} label
+   * @param {string} description
+   * @param {boolean} recommended
+   * @param {boolean} multi
+   * @param {boolean} [other]
+   */
+  function askOption(key, label, description, recommended, multi, other = false) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = `ask-option${other ? " is-other" : ""}`;
+    btn.setAttribute("role", multi ? "checkbox" : "radio");
+    btn.setAttribute("aria-checked", "false");
+    const keyEl = document.createElement("span");
+    keyEl.className = "ask-key";
+    keyEl.setAttribute("aria-hidden", "true");
+    keyEl.textContent = String(key);
+    const text = document.createElement("span");
+    const labelEl = document.createElement("span");
+    labelEl.className = "ask-label";
+    labelEl.append(label);
+    if (recommended) {
+      const tag = document.createElement("span");
+      tag.className = "ask-tag";
+      tag.textContent = "Recommended";
+      labelEl.append(tag);
+    }
+    text.append(labelEl);
+    if (description) {
+      const desc = document.createElement("span");
+      desc.className = "ask-desc";
+      desc.textContent = description;
+      text.append(desc);
+    }
+    btn.append(keyEl, text);
+    return btn;
+  }
+
+  /**
+   * One answer as words: the choices, then any typed text.
+   * @param {{ choices?: string[], text?: string | null, skipped?: boolean }} answer
+   */
+  function askAnswerWords(answer) {
+    if (!answer || answer.skipped) {
+      return "Skipped";
+    }
+    const parts = [];
+    if (answer.choices && answer.choices.length) {
+      parts.push(answer.choices.join(", "));
+    }
+    if (answer.text) {
+      parts.push(`“${answer.text}”`);
+    }
+    return parts.join("; ") || "Skipped";
+  }
+
+  /**
+   * A question card. `onSubmit` sends the answer body and says if it landed.
+   * @param {any[]} questions
+   * @param {{ onSubmit: (body: any) => Promise<boolean>, note?: string, offline?: boolean }} opts
+   */
+  function createAskCard(questions, opts) {
+    askSeq += 1;
+    const id = askSeq;
+    const card = document.createElement("section");
+    card.className = "ask-card msg-enter";
+    card.dataset.state = opts.offline ? "offline" : "waiting";
+    card.tabIndex = -1;
+    card.setAttribute("aria-label", "Humphrey is asking you");
+
+    const head = document.createElement("div");
+    head.className = "ask-head";
+    const status = document.createElement("span");
+    status.className = "ask-status";
+    const dot = document.createElement("span");
+    dot.className = "ask-dot";
+    dot.setAttribute("aria-hidden", "true");
+    const statusText = document.createElement("span");
+    statusText.textContent = opts.note || "Needs you";
+    status.append(dot, statusText);
+    head.append(status);
+    const steps = document.createElement("div");
+    steps.className = "ask-steps";
+    if (questions.length > 1) {
+      head.append(steps);
+    }
+
+    const body = document.createElement("div");
+    body.className = "ask-body";
+    const foot = document.createElement("div");
+    foot.className = "ask-foot";
+    const skipBtn = askButton("btn-ghost ask-skip", "Skip");
+    const hint = document.createElement("span");
+    hint.className = "ask-hint";
+    const sendBtn = askButton("btn-primary ask-send", "Send");
+    foot.append(skipBtn, hint, sendBtn);
+    card.append(head, body, foot);
+
+    /** @type {{ choices: Set<string>, text: string, skipped: boolean, done: boolean }[]} */
+    const answers = questions.map(() => ({ choices: new Set(), text: "", skipped: false, done: false }));
+    let step = 0;
+    let busy = false;
+    /** @type {HTMLButtonElement[]} */
+    let optionEls = [];
+    /** @type {HTMLButtonElement | null} */
+    let otherBtn = null;
+    /** @type {HTMLTextAreaElement | null} */
+    let otherField = null;
+    const chips = questions.map((q, i) => {
+      const chip = askButton("ask-step", q.header);
+      chip.addEventListener("click", () => show(i, true));
+      steps.append(chip);
+      return chip;
+    });
+
+    const last = () => step === questions.length - 1;
+
+    function syncChecks() {
+      const q = questions[step];
+      const a = answers[step];
+      q.options.forEach((/** @type {any} */ opt, /** @type {number} */ k) => {
+        optionEls[k].setAttribute("aria-checked", a.choices.has(opt.label) ? "true" : "false");
+      });
+      if (otherBtn) {
+        otherBtn.setAttribute("aria-checked", a.text.trim() ? "true" : "false");
+      }
+    }
+
+    function syncFoot() {
+      const q = questions[step];
+      const a = answers[step];
+      const has = a.choices.size > 0 || a.text.trim() !== "";
+      sendBtn.textContent = last() ? "Send" : "Next";
+      sendBtn.hidden = !(q.multiSelect || a.text.trim() !== "" || (questions.length > 1 && has));
+      sendBtn.disabled = !has;
+      const n = q.options.length + 1;
+      hint.textContent = q.multiSelect
+        ? `1–${n} to choose · Enter ${last() ? "to send" : "for next"}`
+        : `1–${n} to pick`;
+      chips.forEach((chip, j) => {
+        chip.setAttribute("aria-current", j === step ? "step" : "false");
+        chip.dataset.done = answers[j].done ? "1" : "0";
+      });
+    }
+
+    /** @param {number} i @param {boolean} [focus] */
+    function show(i, focus = false) {
+      step = i;
+      const q = questions[i];
+      const a = answers[i];
+      body.replaceChildren();
+      const title = document.createElement("h3");
+      title.className = "ask-question";
+      title.id = `ask-${id}-q${i}`;
+      title.textContent = q.question;
+      const list = document.createElement("div");
+      list.className = "ask-options";
+      list.setAttribute("role", q.multiSelect ? "group" : "radiogroup");
+      list.setAttribute("aria-labelledby", title.id);
+      optionEls = q.options.map((/** @type {any} */ opt, /** @type {number} */ k) => {
+        const el = askOption(k + 1, opt.label, opt.description || "", Boolean(opt.recommended), q.multiSelect);
+        el.addEventListener("click", () => pick(opt.label));
+        return el;
+      });
+      otherBtn = askOption(q.options.length + 1, "Something else…", "", false, q.multiSelect, true);
+      otherField = document.createElement("textarea");
+      otherField.className = "ask-other-field";
+      otherField.rows = 2;
+      otherField.placeholder = "Type your answer";
+      otherField.setAttribute("aria-label", `Your own answer to: ${q.question}`);
+      otherField.value = a.text;
+      otherField.hidden = a.text === "";
+      otherBtn.addEventListener("click", () => {
+        if (!otherField) return;
+        otherField.hidden = false;
+        otherField.focus();
+      });
+      otherField.addEventListener("input", () => {
+        if (!otherField) return;
+        a.text = otherField.value;
+        if (!q.multiSelect && a.text.trim()) {
+          a.choices.clear();
+        }
+        a.skipped = false;
+        a.done = a.choices.size > 0 || a.text.trim() !== "";
+        syncChecks();
+        syncFoot();
+      });
+      otherField.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+          e.preventDefault();
+          if (a.text.trim()) {
+            advance();
+          }
+        }
+      });
+      list.append(...optionEls, otherBtn, otherField);
+      body.append(title, list);
+      syncChecks();
+      syncFoot();
+      if (focus) {
+        (optionEls.find((el) => el.getAttribute("aria-checked") === "true") || optionEls[0])?.focus();
+      }
+    }
+
+    /** @param {string} label */
+    function pick(label) {
+      if (busy) return;
+      const q = questions[step];
+      const a = answers[step];
+      a.skipped = false;
+      if (q.multiSelect) {
+        if (a.choices.has(label)) a.choices.delete(label);
+        else a.choices.add(label);
+        a.done = a.choices.size > 0 || a.text.trim() !== "";
+        syncChecks();
+        syncFoot();
+        return;
+      }
+      a.choices = new Set([label]);
+      a.text = "";
+      if (otherField) {
+        otherField.value = "";
+        otherField.hidden = true;
+      }
+      a.done = true;
+      syncChecks();
+      advance();
+    }
+
+    function advance() {
+      const a = answers[step];
+      a.done = a.skipped || a.choices.size > 0 || a.text.trim() !== "";
+      const next = answers.findIndex((ans, j) => j > step && !ans.done);
+      const firstOpen = answers.findIndex((ans) => !ans.done);
+      if (next >= 0) {
+        show(next, true);
+      } else if (firstOpen >= 0) {
+        show(firstOpen, true);
+      } else {
+        void submit();
+      }
+    }
+
+    function skip() {
+      if (busy) return;
+      const a = answers[step];
+      a.choices.clear();
+      a.text = "";
+      a.skipped = true;
+      a.done = true;
+      advance();
+    }
+
+    function answerBody() {
+      if (answers.every((a) => a.skipped)) {
+        return { skipped: true };
+      }
+      /** @type {Record<string, any>} */
+      const out = {};
+      questions.forEach((q, i) => {
+        const a = answers[i];
+        out[q.header] = a.skipped
+          ? { skipped: true }
+          : { choices: [...a.choices], text: a.text.trim() || null };
+      });
+      return { answers: out };
+    }
+
+    /** @param {any} [override] */
+    async function submit(override) {
+      if (busy) return false;
+      busy = true;
+      const before = card.dataset.state;
+      card.dataset.state = "sending";
+      const ok = await opts.onSubmit(override || answerBody());
+      busy = false;
+      if (!ok && card.dataset.state === "sending") {
+        card.dataset.state = before || "waiting";
+      }
+      return ok;
+    }
+
+    skipBtn.addEventListener("click", () => skip());
+    sendBtn.addEventListener("click", () => advance());
+    card.addEventListener("keydown", (e) => {
+      const target = /** @type {HTMLElement} */ (e.target);
+      if (e.key === "Escape") {
+        e.preventDefault();
+        question.focus();
+        return;
+      }
+      if (target instanceof HTMLTextAreaElement) return;
+      const all = [...optionEls, ...(otherBtn ? [otherBtn] : [])];
+      if (/^[1-9]$/.test(e.key) && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        const el = all[Number(e.key) - 1];
+        if (el) {
+          e.preventDefault();
+          el.click();
+        }
+        return;
+      }
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        const at = all.indexOf(/** @type {HTMLButtonElement} */ (target));
+        const to = at < 0 ? 0 : (at + (e.key === "ArrowDown" ? 1 : all.length - 1)) % all.length;
+        e.preventDefault();
+        all[to]?.focus();
+        return;
+      }
+      if (e.key === "Enter" && questions[step].multiSelect && target.classList.contains("ask-option")) {
+        e.preventDefault();
+        if (answers[step].done) advance();
+      }
+    });
+
+    show(0);
+
+    return {
+      el: card,
+      questions,
+      focus() {
+        card.focus({ preventScroll: true });
+        optionEls[0]?.focus({ preventScroll: true });
+      },
+      /** @param {string} text */
+      reply(text) {
+        return submit({ reply: text });
+      },
+    };
+  }
+
+  /**
+   * Settle a card into the record of its answer (`details` is the tool's).
+   * @param {HTMLElement} card
+   * @param {any} details
+   */
+  function settleAskCard(card, details) {
+    const statusWords = {
+      answered: "You answered",
+      skipped: "You skipped this",
+      replied: "You replied",
+      stopped: "Stopped before you answered",
+    };
+    const state = String(details.status || "answered");
+    card.dataset.state = state;
+    card.replaceChildren();
+    const head = document.createElement("div");
+    head.className = "ask-head";
+    const status = document.createElement("span");
+    status.className = "ask-status";
+    const dot = document.createElement("span");
+    dot.className = "ask-dot";
+    dot.setAttribute("aria-hidden", "true");
+    status.append(dot, statusWords[/** @type {keyof typeof statusWords} */ (state)] || "Answered");
+    head.append(status);
+    const list = document.createElement("dl");
+    list.className = "ask-summary";
+    const questions = Array.isArray(details.questions) ? details.questions : [];
+    const answers = details.answers || {};
+    // Each question stays with its answer, so a reopened chat still says
+    // what was asked. Long questions are clamped to two lines (full text on hover).
+    for (const q of questions) {
+      const row = document.createElement("div");
+      const dt = document.createElement("dt");
+      const header = document.createElement("span");
+      header.className = "ask-summary-header";
+      header.textContent = q.header;
+      const asked = document.createElement("span");
+      asked.className = "ask-summary-question";
+      asked.textContent = q.question;
+      asked.title = q.question;
+      dt.append(header, asked);
+      const dd = document.createElement("dd");
+      dd.textContent =
+        state === "replied" ? "See your reply" : state === "stopped" ? "No answer" : askAnswerWords(answers[q.header]);
+      row.append(dt, dd);
+      list.append(row);
+    }
+    if (state === "replied") {
+      const row = document.createElement("div");
+      row.className = "ask-summary-reply";
+      const dt = document.createElement("dt");
+      dt.textContent = "Your reply";
+      const dd = document.createElement("dd");
+      dd.textContent = `“${details.reply || ""}”`;
+      row.append(dt, dd);
+      list.append(row);
+    }
+    card.append(head, list);
+    card.setAttribute(
+      "aria-label",
+      `${statusWords[/** @type {keyof typeof statusWords} */ (state)] || "Answered"}: ${questions.map((/** @type {any} */ q) => q.question).join(" ")}`,
+    );
+  }
+
+  /**
+   * A card whose run has ended: answering sends the answer as your next
+   * message, so a reload or a stop loses nothing.
+   * @param {any[]} questions
+   */
+  function createOfflineAskCard(questions) {
+    /** @type {any} */
+    let ask = null;
+    ask = createAskCard(questions, {
+      offline: true,
+      note: "Humphrey stopped waiting · your answer starts a new message",
+      onSubmit: async (body) => {
+        if (body.skipped) {
+          settleAskCard(ask.el, { status: "skipped", questions, answers: {} });
+          return true;
+        }
+        const lines = questions.map((q) => `${q.header}: ${askAnswerWords(body.answers?.[q.header])}`);
+        settleAskCard(ask.el, { status: "answered", questions, answers: body.answers || {} });
+        void sendPrompt(lines.join("\n"));
+        return true;
+      },
+    });
+    return ask;
+  }
+
+  /** @param {any} details @param {boolean} [superseded] */
+  function renderStoredAsk(details, superseded = false) {
+    const questions = Array.isArray(details?.questions) ? details.questions : [];
+    if (details?.status === "stopped" && !superseded) {
+      const ask = createOfflineAskCard(questions);
+      ask.el.classList.remove("msg-enter");
+      transcript.append(ask.el);
+      return ask.el;
+    }
+    const card = document.createElement("section");
+    card.className = "ask-card is-stored";
+    settleAskCard(card, details);
+    transcript.append(card);
+    return card;
+  }
+
+  /** @param {boolean} waiting */
+  function setAskWaiting(waiting) {
+    document.title = waiting ? `Needs you · ${baseTitle}` : baseTitle;
+    const running = stage.dataset.running === "1";
+    setStatus(waiting ? "waiting" : running ? "working" : "ready");
+    question.placeholder = waiting
+      ? "Or answer in your own words…"
+      : running
+        ? "Steer the current turn…"
+        : composerPlaceholder;
+    if (composerHint && waiting) {
+      composerHint.innerHTML = "<kbd>Enter</kbd> answer · <kbd>Esc</kbd> stop";
+    }
+  }
+
+  /**
+   * @param {string} sid
+   * @param {string} requestId
+   * @param {any} body
+   */
+  async function postAskAnswer(sid, requestId, body) {
+    try {
+      const res = await fetch(`/api/sessions/${encodeURIComponent(sid)}/ui/${encodeURIComponent(requestId)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (res.ok) {
+        return true;
+      }
+      showToast(res.status === 404 ? "Humphrey isn't waiting for this any more" : "Could not send your answer");
+    } catch {
+      showToast("Could not send your answer");
+    }
+    return false;
+  }
+
+  /**
+   * The run is asking: show the card below the tool call and wait.
+   * @param {Record<string, any>} event
+   * @param {any} state
+   */
+  function showAsk(event, state) {
+    const callId = String(event.call_id ?? "");
+    const requestId = String(event.request_id ?? "");
+    const questions = Array.isArray(event.questions) ? event.questions : [];
+    const sid = sessionId;
+    if (!sid || !requestId || questions.length === 0) {
+      return;
+    }
+    const row = state.toolEls.get(callId);
+    if (row) {
+      row.el.dataset.state = "waiting";
+      row.meta.textContent = "needs you";
+      stopDotPulse(row.el);
+      row.el.closest(".tool-cluster")?.setAttribute("data-waiting", "1");
+    }
+    const ask = createAskCard(questions, { onSubmit: (body) => postAskAnswer(sid, requestId, body) });
+    transcript.append(ask.el);
+    // Later tools start a fresh group below the card, in the order things happened.
+    state.toolGroupEl = null;
+    pendingAsk = { ...ask, callId };
+    setAskWaiting(true);
+    announce(`Humphrey is asking: ${questions[0].question}`);
+    pinToBottom();
+    ask.focus();
+  }
+
+  /** Forget the waiting card without touching it: its chat is going away. */
+  function dropAsk() {
+    pendingAsk = null;
+    setAskWaiting(false);
+  }
+
+  /** @param {any} [details] */
+  function endAsk(details) {
+    if (!pendingAsk) return;
+    const ask = pendingAsk;
+    pendingAsk = null;
+    setAskWaiting(false);
+    if (details) {
+      settleAskCard(ask.el, details);
+    } else {
+      ask.el.replaceWith(createOfflineAskCard(ask.questions).el);
     }
   }
 
@@ -2368,6 +2913,7 @@
   }
 
   function resetChat() {
+    dropAsk();
     if (activeRun) {
       suppressAbortMessage = true;
       activeRun.abort();
@@ -2461,6 +3007,7 @@
    * @param {{ silent?: boolean }} [opts]
    */
   async function openSession(id, opts = {}) {
+    dropAsk();
     if (activeRun) {
       activeRun.abort();
       activeRun = null;
@@ -2508,10 +3055,14 @@
       setToolStat("—");
       /** @type {{ ts: number, el: Element }[]} */
       const placed = [];
-      for (const msg of rows) {
+      for (const [i, msg] of rows.entries()) {
         let el;
         if (msg.role === "context_summary") {
           el = appendMessage("context-summary", msg.content, { animate: false });
+        } else if (msg.role === "question") {
+          // Only a last, unanswered card stays answerable.
+          const later = rows.slice(i + 1).some((r) => r.role === "user");
+          el = renderStoredAsk(msg.question, later);
         } else {
           if (msg.role === "user") {
             charsIn += msg.content.length;
@@ -2666,6 +3217,11 @@
       return;
     }
 
+    if (type === "ui_request" && event.kind === "question") {
+      showAsk(event, state);
+      return;
+    }
+
     if (type === "agent_start") {
       if (typeof event.session_id === "string" && event.session_id) {
         sessionId = event.session_id;
@@ -2805,7 +3361,7 @@
       // only reasoning models produce thinkingText, and it's worth more than
       // "Using <tool>…" once it's there.
       if (!state.thinkingText) {
-        updateThoughtBody(state, `Using ${label}…`);
+        updateThoughtBody(state, tool === "ask_user_question" ? "Waiting for your answer…" : `Using ${label}…`);
       }
       const card = appendToolRow(tool, callId, event.args ?? {}, label, state);
       state.toolEls.set(callId, card);
@@ -2815,6 +3371,10 @@
 
     if (type === "tool_end") {
       const callId = String(event.call_id ?? "");
+      if (pendingAsk && pendingAsk.callId === callId) {
+        endAsk(event.question || { status: "stopped", questions: pendingAsk.questions });
+      }
+      state.toolEls.get(callId)?.el.closest(".tool-cluster")?.removeAttribute("data-waiting");
       const tool = String(event.tool ?? "tool");
       const label = typeof event.label === "string" ? event.label : tool;
       const rawResult = String(event.result ?? "");
@@ -2842,6 +3402,10 @@
       const isError = event.is_error === true;
       // Edits and shell runs carry their outcome on the row itself.
       card.meta.textContent = tool === "edit" || tool === "bash" ? `${blurb} · ${ms} ms` : `${ms} ms`;
+      if (tool === "ask_user_question" && event.question) {
+        const words = { answered: "answered", skipped: "skipped", replied: "replied", stopped: "no answer" };
+        card.meta.textContent = words[/** @type {keyof typeof words} */ (event.question.status)] || "done";
+      }
       if (typeof event.diff === "string" && event.diff) {
         const diffLabel = document.createElement("span");
         diffLabel.className = "tool-section-label";
@@ -2930,6 +3494,15 @@
     const text = content.trim();
     const attachments = pendingAttachments;
     if (!text && attachments.length === 0) {
+      return;
+    }
+
+    // While a question card waits, the message box answers it.
+    if (pendingAsk && text && attachments.length === 0 && !opts.fromQueue) {
+      if (await pendingAsk.reply(text)) {
+        question.value = "";
+        autoSize();
+      }
       return;
     }
 
@@ -3081,6 +3654,7 @@
     } finally {
       if (activeRun === controller) {
         activeRun = null;
+        endAsk();
         finalizeStuckTools(state);
         liveTools.clear();
         refreshActiveTool();

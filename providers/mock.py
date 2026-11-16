@@ -26,7 +26,36 @@ def _pick_tool(latest: str) -> tuple[str, dict[str, Any]] | None:
         return "write", {"path": "notes.md", "content": f"# Note\n\n{latest}\n"}
     if any(t in lower for t in ("list files", "workspace", "what files")):
         return "bash", {"command": "ls -la", "description": "Listing workspace files"}
+    if "ask me" in lower:
+        return "ask_user_question", {"questions": _MOCK_QUESTIONS}
     return None
+
+
+# What "ask me" asks offline: one single choice, one multiple choice.
+_MOCK_QUESTIONS = [
+    {
+        "question": "Which months should the sales dashboard cover?",
+        "header": "Period",
+        "options": [
+            {"label": "This year only", "description": "January to October 2026"},
+            {
+                "label": "Last 12 months",
+                "description": "Matches the CSV's full range",
+                "recommended": True,
+            },
+        ],
+    },
+    {
+        "question": "Which charts should the dashboard include?",
+        "header": "Charts",
+        "multiSelect": True,
+        "options": [
+            {"label": "Revenue by month", "description": "A line over the period"},
+            {"label": "Top products", "description": "The ten best sellers"},
+            {"label": "Regions", "description": "Revenue split by region"},
+        ],
+    },
+]
 
 
 class MockProvider:
@@ -72,6 +101,8 @@ class MockProvider:
         _ = system
         latest = self._latest_user(messages)
         picked = _pick_tool(latest)
+        if picked and picked[0] not in {t.name for t in tools}:
+            picked = None  # e.g. ask_user_question switched off
         awaiting_followup = self._awaiting_tool_followup(messages)
 
         if signal is not None and signal.is_cancelled():
@@ -99,6 +130,11 @@ class MockProvider:
                 f"I ran `{name}` via the real tool handlers.\n\n"
                 f"Available tools: {', '.join(t.name for t in tools)}."
             )
+            result = next(
+                (m for m in reversed(messages) if isinstance(m, ToolResultMessage)), None
+            )
+            if name == "ask_user_question" and result is not None:
+                text += f"\n\nIt returned:\n\n{result.text}"
         else:
             preview = latest.strip().replace("\n", " ")
             if len(preview) > 100:
@@ -115,7 +151,7 @@ class MockProvider:
                 "Offline mock provider — no model was called.\n\n"
                 f"You asked: {preview}\n\n"
                 f"{image_note}"
-                "Try **list files**, **write a note**, or **draw a diagram**."
+                "Try **list files**, **write a note**, **draw a diagram**, or **ask me**."
             )
 
         chunk_size = 28
