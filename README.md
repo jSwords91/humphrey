@@ -131,12 +131,15 @@ Humphrey has tau's four coding tools, and nothing else:
 | `edit` | Exact text replacements in a file (shown as a diff in the UI) |
 | `bash` | Run a shell command |
 
-They work in `workspace/` (or `HUMPHREY_WORKSPACE`), so relative paths land
-there and the agent can't rewrite Humphrey's own code. Skills are loaded the
-tau way: the prompt lists each `SKILL.md` path and the model reads it with
-`read`.
+They work in `workspace/` (or `HUMPHREY_WORKSPACE`). Relative paths land
+there, and `read`, `write` and `edit` refuse any path that ends up outside
+it, so they can't touch Humphrey's own code, your `.env` or your ChatGPT
+sign-in. `read` can also open the skills and the saved output of long `bash`
+commands. Skills are loaded the tau way: the prompt lists each `SKILL.md`
+path and the model reads it with `read`.
 
-**`bash` runs whatever command the model chooses, with no allowlist.** Run
+**`bash` runs whatever command the model chooses, with no allowlist,** and
+the workspace limit above doesn't apply to it. Run
 Humphrey somewhere you're comfortable with that (the Docker setup is a good
 default) and don't expose its port beyond your machine; `docker-compose.yml`
 binds it to localhost for this reason.

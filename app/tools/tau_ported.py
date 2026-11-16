@@ -9,8 +9,10 @@ wrapper, and with tau's image-reading support in ``read`` dropped.
 Scope and safety, as wired:
   - ``app.tools`` roots them in the workspace directory (HUMPHREY_WORKSPACE,
     default ./workspace), not the repo root, so the agent cannot rewrite the
-    app it is running in. Relative paths resolve there; absolute paths are
-    not blocked (skills are read by absolute path).
+    app it is running in. Relative paths resolve there. ``read``, ``write``
+    and ``edit`` refuse any path that resolves outside it (``..``, absolute
+    paths, symlinks), except that ``read`` may also open the skills folder
+    and saved bash output. This does not confine ``bash``.
   - ``bash`` is unrestricted shell execution with no allowlist. Run Humphrey
     somewhere you are happy for the model to run commands (Docker, a VM), and
     keep the port bound to localhost (see docker-compose.yml).
@@ -24,7 +26,7 @@ import json
 import os
 import signal as _signal
 import tempfile
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from time import monotonic
@@ -349,11 +351,24 @@ def _str_arg(arguments: Mapping[str, Any], name: str) -> str:
     return value
 
 
-def _path_arg(arguments: Mapping[str, Any], name: str, *, cwd: Path) -> Path:
+def _path_arg(
+    arguments: Mapping[str, Any], name: str, *, cwd: Path, roots: Sequence[Path]
+) -> Path:
+    """Resolve a path argument and refuse it unless it lands inside ``roots``.
+
+    Resolved first, so ``..``, absolute paths and symlinks are judged by
+    where they really point.
+    """
     value = _str_arg(arguments, name)
     path = Path(value).expanduser()
     if not path.is_absolute():
         path = cwd / path
+    path = path.resolve()
+    if not any(path.is_relative_to(root.resolve()) for root in roots):
+        raise ToolInputError(
+            f"Path is outside the working directory: {path}. "
+            f"Use a path inside {cwd.resolve()}."
+        )
     return path
 
 
@@ -508,9 +523,20 @@ async def _communicate_with_cancellation(
             cancel_watch.cancel()
 
 
+# Truncated bash output is saved here, and the model is told to `read` it,
+# so the read tool allows this one folder outside the working directory.
+BASH_OUTPUT_DIR = Path(tempfile.gettempdir()) / "humphrey-bash-output"
+
+
 def _write_temp_output(output: str) -> str:
+    BASH_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
-        mode="w", encoding="utf-8", prefix="humphrey-bash-", suffix=".log", delete=False
+        mode="w",
+        encoding="utf-8",
+        prefix="humphrey-bash-",
+        suffix=".log",
+        dir=BASH_OUTPUT_DIR,
+        delete=False,
     ) as handle:
         handle.write(output)
         return handle.name
@@ -519,13 +545,17 @@ def _write_temp_output(output: str) -> str:
 # --- tool factories ---------------------------------------------------------
 
 
-def create_read_tool(*, cwd: str | Path | None = None) -> AgentTool:
+def create_read_tool(
+    *, cwd: str | Path | None = None, read_roots: Sequence[Path] = ()
+) -> AgentTool:
     """Read a UTF-8 text file, with offset/limit and head-truncation.
 
     No image support (unlike tau's version) — Humphrey's message model has
-    no image content type to return one as.
+    no image content type to return one as. Reads are confined to ``cwd``,
+    the saved bash output folder, and any extra ``read_roots`` (skills).
     """
     root = Path.cwd() if cwd is None else Path(cwd)
+    roots = (root, BASH_OUTPUT_DIR, *read_roots)
 
     async def execute(
         _tool_call_id: str,
@@ -535,7 +565,7 @@ def create_read_tool(*, cwd: str | Path | None = None) -> AgentTool:
     ) -> ToolResult:
         _ = signal
         try:
-            path = _path_arg(arguments, "path", cwd=root)
+            path = _path_arg(arguments, "path", cwd=root, roots=roots)
             offset = _optional_int_arg(arguments, "offset")
             limit = _optional_int_arg(arguments, "limit")
             if offset is not None and offset < 0:
@@ -625,7 +655,7 @@ def create_read_tool(*, cwd: str | Path | None = None) -> AgentTool:
 
 
 def create_write_tool(*, cwd: str | Path | None = None) -> AgentTool:
-    """Write (create or overwrite) a UTF-8 text file. No sandboxing beyond ``cwd`` resolution."""
+    """Write (create or overwrite) a UTF-8 text file, inside ``cwd`` only."""
     root = Path.cwd() if cwd is None else Path(cwd)
 
     async def execute(
@@ -636,7 +666,7 @@ def create_write_tool(*, cwd: str | Path | None = None) -> AgentTool:
     ) -> ToolResult:
         _ = signal
         try:
-            path = _path_arg(arguments, "path", cwd=root)
+            path = _path_arg(arguments, "path", cwd=root, roots=(root,))
             content = _str_arg(arguments, "content")
         except ToolInputError as exc:
             return ToolResult.error(str(exc))
@@ -670,7 +700,8 @@ def create_write_tool(*, cwd: str | Path | None = None) -> AgentTool:
 
 
 def create_edit_tool(*, cwd: str | Path | None = None) -> AgentTool:
-    """Apply one or more exact, unique, non-overlapping text replacements to one file."""
+    """Apply one or more exact, unique, non-overlapping text replacements to one file
+    inside ``cwd``."""
     root = Path.cwd() if cwd is None else Path(cwd)
 
     async def execute(
@@ -682,7 +713,7 @@ def create_edit_tool(*, cwd: str | Path | None = None) -> AgentTool:
         _ = signal
         try:
             prepared = _prepare_edit_arguments(arguments)
-            path = _path_arg(prepared, "path", cwd=root)
+            path = _path_arg(prepared, "path", cwd=root, roots=(root,))
             edits = _edits_arg(prepared)
             if not path.exists():
                 raise ToolInputError(f"Could not edit file: {path}. File not found.")
@@ -893,12 +924,15 @@ def create_bash_tool(
 
 
 def create_coding_tools(
-    *, cwd: str | Path | None = None, shell_command_prefix: str | None = None
+    *,
+    cwd: str | Path | None = None,
+    read_roots: Sequence[Path] = (),
+    shell_command_prefix: str | None = None,
 ) -> list[AgentTool]:
     """The full ported set, in tau's own order: read, write, edit, bash."""
     root = Path.cwd() if cwd is None else Path(cwd)
     return [
-        create_read_tool(cwd=root),
+        create_read_tool(cwd=root, read_roots=read_roots),
         create_write_tool(cwd=root),
         create_edit_tool(cwd=root),
         create_bash_tool(cwd=root, shell_command_prefix=shell_command_prefix),
