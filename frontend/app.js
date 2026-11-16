@@ -3238,6 +3238,14 @@
       state.toolGroupEl = null;
       state.toolGroupCount = 0;
       state.toolClusters = new Map();
+      // The model's next step after tools gets its own live panel below
+      // them; otherwise the only sign it's still working sits above the
+      // tool cards, often scrolled out of view.
+      if (state.thoughtEl && state.thoughtEl.isConnected && transcript.lastElementChild !== state.thoughtEl) {
+        settleThought(state);
+        state.thoughtEl = null;
+        state.thinkingText = "";
+      }
       ensureThought(state);
       return;
     }
