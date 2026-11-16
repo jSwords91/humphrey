@@ -24,6 +24,10 @@ from providers import get_provider
 # Tools and skills are baked into the image at build time, not user-editable
 # at runtime, so this part of the prompt is assembled once rather than per
 # request. The current date is not — see system_prompt().
+# Model calls one request may make before it is stopped as a likely loop.
+# brain's default (10) cut real multi-step work short.
+MAX_TOOL_TURNS = 50
+
 STATIC_SYSTEM_PROMPT = build_system_prompt(TOOLS) + format_skills_for_prompt()
 
 
@@ -59,6 +63,7 @@ def build_harness(
         system=system_prompt(),
         tools=list(TOOLS if tools is None else tools),
         session_id=session_id,
+        max_turns=MAX_TOOL_TURNS,
         before_tool_call=before_tool_call,
         after_tool_call=after_tool_call,
     )
