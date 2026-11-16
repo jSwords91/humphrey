@@ -44,6 +44,16 @@ it inline as an artefact.</sub>
       <sub><b>Sessions and files.</b> Chats are auto-named and persisted; every file the agent touches is listed under Files.</sub>
     </td>
   </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img alt="A question card asking which charts the dashboard should include, with two options chosen, a 'Something else' row, Skip and Send" src="docs/screenshots/ask-question.png"><br>
+      <sub><b>Clarifying questions.</b> When a request could go several ways, Humphrey asks. Pick with a click or a number key, type your own answer, or skip.</sub>
+    </td>
+    <td width="50%" valign="top">
+      <img alt="The answered card, showing each question with the answer given" src="docs/screenshots/ask-answered.png"><br>
+      <sub><b>Answers stay in the chat.</b> The card settles to each question and your answer, and comes back when you reopen the chat.</sub>
+    </td>
+  </tr>
 </table>
 
 ## Running locally
@@ -122,7 +132,7 @@ A few things worth knowing:
 
 ## Tools
 
-Humphrey has tau's four coding tools, and nothing else:
+Humphrey has tau's four coding tools, plus one for asking you questions:
 
 | Tool | Purpose |
 | --- | --- |
@@ -130,6 +140,7 @@ Humphrey has tau's four coding tools, and nothing else:
 | `write` | Create or overwrite a file |
 | `edit` | Exact text replacements in a file (shown as a diff in the UI) |
 | `bash` | Run a shell command |
+| `ask_user_question` | Ask you one to four clarifying questions, each with a few options, and wait for your answer |
 
 They work in `workspace/` (or `HUMPHREY_WORKSPACE`). Relative paths land
 there, and `read`, `write` and `edit` refuse any path that ends up outside
@@ -137,6 +148,12 @@ it, so they can't touch Humphrey's own code, your `.env` or your ChatGPT
 sign-in. `read` can also open the skills and the saved output of long `bash`
 commands. Skills are loaded the tau way: the prompt lists each `SKILL.md`
 path and the model reads it with `read`.
+
+`ask_user_question` shows a card in the chat. Pick an option (one click
+does it for a single question), type your own answer under "Something
+else", or skip. Typing in the message box while a card is open answers it
+too. Humphrey won't ask a skipped question again. To turn the tool off, set
+`HUMPHREY_ASK_USER_QUESTION=0`; Humphrey then isn't offered it at all.
 
 **`bash` runs whatever command the model chooses, with no allowlist,** and
 the workspace limit above doesn't apply to it. Run

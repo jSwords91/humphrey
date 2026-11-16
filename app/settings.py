@@ -20,6 +20,10 @@ def _flag(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes"}
 
 
+def _on_unless_off(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() not in {"0", "false", "no", "off"}
+
+
 StorageBackend = Literal["auto", "azure", "local", "memory"]
 _STORAGE_BACKENDS = {"auto", "azure", "local", "memory"}
 
@@ -49,6 +53,7 @@ class Settings:
     workspace_dir: str
     credentials_dir: str
     context_window_tokens: int
+    ask_user_question: bool
 
     @property
     def openai_configured(self) -> bool:
@@ -111,6 +116,9 @@ def get_settings() -> Settings:
         # (RuntimeModelCatalog) - deliberately simpler, see context_window.py's
         # module docstring. 128k covers every model this app currently uses.
         context_window_tokens=int(os.environ.get("MODEL_CONTEXT_WINDOW_TOKENS", "128000")),
+        # The ask_user_question tool (on by default). Off removes the tool, so
+        # the model is never offered it and the prompt doesn't mention it.
+        ask_user_question=_on_unless_off("HUMPHREY_ASK_USER_QUESTION"),
     )
 
 

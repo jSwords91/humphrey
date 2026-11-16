@@ -36,7 +36,7 @@ from app.image_processing import (
     process_image,
 )
 from app.rendering.sse import SseRenderer, encode_sse
-from app.runs import get_active, register_active, unregister_active
+from app.runs import get_active, get_bridge, register_active, unregister_active
 from app.skills import SkillError, expand_skill_command, load_skills
 from app.sessions import (
     SAFE_SESSION_ID,
@@ -46,7 +46,8 @@ from app.sessions import (
     new_session_id,
 )
 from app.settings import get_settings
-from app.tools import TOOLS, WORKSPACE_DIR
+from app.tools import TOOLS, WORKSPACE_DIR, tools_for_run
+from app.ui_bridge import WebUiBridge
 from brain.events import ToolExecutionEndEvent
 from brain.cancel import SimpleCancellationToken
 from brain.messages import AgentMessage, AssistantMessage, ImageContent, TextContent, UserMessage
@@ -118,11 +119,13 @@ class QueueRequest(BaseModel):
 class SessionMessageOut(BaseModel):
     # context_summary: a synthetic auto-compaction summary (app/context_window.py),
     # not something the user typed - rendered distinctly by the frontend.
-    role: Literal["user", "assistant", "context_summary"]
+    # question: an ask_user_question card, with its answer in `question`.
+    role: Literal["user", "assistant", "context_summary", "question"]
     content: str
     ts: int | None = None
     # URLs of the images attached to a user turn (GET /api/sessions/{id}/images/...).
     images: list[str] = Field(default_factory=list)
+    question: dict[str, Any] | None = None
 
 
 class SessionOut(BaseModel):
@@ -176,6 +179,21 @@ class SourceRequest(BaseModel):
 
 class SignInStartOut(BaseModel):
     url: str
+
+
+class QuestionAnswerIn(BaseModel):
+    choices: list[str] = Field(default_factory=list, max_length=4)
+    text: str | None = Field(default=None, max_length=8000)
+    skipped: bool = False
+
+
+class UiAnswerRequest(BaseModel):
+    """The answer to a question card: per-question answers keyed by header,
+    a skip of the whole card, or a reply typed in the composer instead."""
+
+    answers: dict[str, QuestionAnswerIn] | None = Field(default=None, max_length=4)
+    skipped: bool = False
+    reply: str | None = Field(default=None, max_length=8000)
 
 
 class QueueOut(BaseModel):
@@ -366,6 +384,7 @@ async def get_session(session_id: str) -> SessionOut:
                 content=row.content,
                 ts=row.ts,
                 images=[f"/api/sessions/{session.id}/images/{digest}" for digest in row.images],
+                question=row.question,
             )
             for row in session.history_rows()
         ],
@@ -409,6 +428,11 @@ async def get_session_image(session_id: str, digest: str) -> Response:
 # keeps only weak references to tasks, so without this one could be
 # garbage-collected part-way through saving.
 _finishing: set[asyncio.Task[None]] = set()
+# Turns still running, held for the same reason.
+_running: set[asyncio.Task[None]] = set()
+# Seconds of silence before the stream sends a keepalive, e.g. while a
+# question card waits for an answer.
+KEEPALIVE_SECONDS = 15.0
 
 
 async def finish_turn(
@@ -491,6 +515,21 @@ async def follow_up_session(session_id: str, body: QueueRequest) -> QueueOut:
         follow_up=len(queued.follow_up),
         count=queued.count,
     )
+
+
+@app.post(
+    "/api/sessions/{session_id}/ui/{request_id}",
+    status_code=204,
+    dependencies=[Depends(_json_only)],
+)
+async def answer_ui_request(session_id: str, request_id: str, body: UiAnswerRequest) -> Response:
+    """Answer a question the run is waiting on (app/ui_bridge.py)."""
+    if not SAFE_SESSION_ID.match(session_id):
+        raise HTTPException(status_code=422, detail="Invalid session id.")
+    bridge = get_bridge(session_id)
+    if bridge is None or not bridge.resolve(request_id, body.model_dump()):
+        raise HTTPException(status_code=404, detail="Nothing is waiting for this answer.")
+    return Response(status_code=204)
 
 
 def _process_uploaded_images(attachments: list[ImageAttachment]) -> tuple[list[ImageContent], list[str]]:
@@ -588,44 +627,91 @@ async def agent(body: AgentRequest, request: Request) -> StreamingResponse:
     else:
         prompt_message = UserMessage(content=prompt_text)
 
-    harness = build_harness(session_id=session_id, provider=provider, messages=history)
-    cancel = SimpleCancellationToken()
-    register_active(session_id, harness)
+    # Every SSE frame goes through `frames`: the turn's events, and the
+    # question cards its bridge sends while a tool waits for an answer.
+    # None marks the end, sent once the turn is saved.
+    frames: asyncio.Queue[str | None] = asyncio.Queue()
+    bridge = WebUiBridge(lambda payload: frames.put_nowait(encode_sse({**payload, "session_id": session_id})))
+    harness = build_harness(
+        session_id=session_id, provider=provider, messages=history, tools=tools_for_run(bridge)
+    )
+    stopped = SimpleCancellationToken()
+    register_active(session_id, harness, bridge)
 
     tracker = ArtifactTracker(WORKSPACE_DIR)
 
-    async def event_stream() -> AsyncIterator[str]:
+    async def run_turn() -> None:
+        """Run the turn and save it, in a task of its own. The stream only
+        relays its frames, so a browser that goes away (a reload, a closed
+        tab) stops the run but can't cut the save short, and a tool can
+        wait on the bridge while its question card goes out."""
         renderer = SseRenderer(session_id=session_id)
-        stream = harness.prompt_message(prompt_message)
+        stream: AsyncIterator[Any] | None = None
         try:
+            stream = harness.prompt_message(prompt_message)
             async for event in stream:
-                if await request.is_disconnected():
-                    cancel.cancel()
-                    harness.cancel()
-                    break
                 wire = renderer.to_sse(event)
                 if wire is not None:
-                    yield wire
+                    frames.put_nowait(wire)
                 if isinstance(event, ToolExecutionEndEvent):
                     for artifact in tracker.changes():
                         artifact["version"] = 1 + sum(
                             1 for a in session.artifacts if a.get("path") == artifact["path"]
                         )
                         session.artifacts.append(artifact)
-                        yield encode_sse({"type": "artifact", **artifact})
+                        frames.put_nowait(encode_sse({"type": "artifact", **artifact}))
+        except Exception:  # noqa: BLE001
+            logger.exception("turn failed for session %s", session_id)
         finally:
-            try:
-                await stream.aclose()
-            except Exception:  # noqa: BLE001
-                logger.debug("agent stream aclose failed", exc_info=True)
-            if cancel.is_cancelled():
-                harness.cancel()
+            if stream is not None:
+                try:
+                    await stream.aclose()  # type: ignore[attr-defined]
+                except Exception:  # noqa: BLE001
+                    logger.debug("agent stream aclose failed", exc_info=True)
+            bridge.close()
+            if stopped.is_cancelled():
                 harness.append_interrupted_tool_results()
             unregister_active(session_id, harness)
             # The harness started from model_context(); append only what this
             # turn added, so the stored transcript stays complete.
             session.messages.extend(harness.messages[len(history) :])
-            await finish_turn(session, store, housekeeping, latest_user)
+            try:
+                await finish_turn(session, store, housekeeping, latest_user)
+            finally:
+                frames.put_nowait(None)
+
+    def stop() -> None:
+        """Stop the run. Synchronous on purpose: it runs while the request
+        is being cancelled, where any await would be cancelled too."""
+        stopped.cancel()
+        harness.cancel()
+        bridge.close()
+
+    async def event_stream() -> AsyncIterator[str]:
+        task = asyncio.create_task(run_turn())
+        _running.add(task)
+        task.add_done_callback(_running.discard)
+        finished = False
+        try:
+            while True:
+                try:
+                    frame = await asyncio.wait_for(frames.get(), KEEPALIVE_SECONDS)
+                except asyncio.TimeoutError:
+                    # Quiet while a question waits: keep the connection open,
+                    # and notice if the browser has gone.
+                    if await request.is_disconnected():
+                        break
+                    yield ": keepalive\n\n"
+                    continue
+                if frame is None:
+                    finished = True
+                    break
+                yield frame
+                if await request.is_disconnected():
+                    break
+        finally:
+            if not finished:
+                stop()
 
     return StreamingResponse(
         event_stream(),

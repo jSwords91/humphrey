@@ -195,6 +195,16 @@ button:active:not(:disabled):not(.latest-btn):not(.btn-send) {
   color: var(--hb-working-text);
 }
 
+.shell[data-status="waiting"] .status-pill {
+  border-color: transparent;
+  background: var(--color-attention-dim);
+  color: var(--hb-attention-text);
+}
+
+.shell[data-status="waiting"] .status-dot {
+  background: var(--hb-attention);
+}
+
 .shell[data-context="warn"] .stats-ring-fill,
 .shell[data-context="warn"] .context-bar-fill {
   stroke: var(--hb-warning);
@@ -2647,4 +2657,351 @@ button:active:not(:disabled):not(.latest-btn):not(.btn-send) {
   display: inline-block;
   margin-top: var(--space-2);
   text-decoration: none;
+}
+
+/* Question cards (ask_user_question). Built only from what the brand sheet
+   already has: the Raised surface with the fold, the status line along the
+   top edge (coral "Needs you" while it waits, tan once answered), Inter
+   400/500, and the tan accent for what's chosen. */
+.ask-card {
+  position: relative;
+  width: 100%;
+  max-width: var(--transcript-max);
+  padding: calc(0.85rem + var(--hb-band-h)) 1rem 0.9rem;
+  background: var(--color-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+}
+
+.ask-card:focus {
+  outline: none;
+}
+
+.ask-card::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: var(--hb-band-h);
+  background: var(--color-hairline);
+}
+
+.ask-card[data-state="waiting"]::before,
+.ask-card[data-state="sending"]::before,
+.ask-card[data-state="offline"]::before {
+  background: var(--hb-attention);
+}
+
+.ask-card[data-state="answered"]::before,
+.ask-card[data-state="replied"]::before {
+  background: var(--hb-accent);
+  transform-origin: left;
+  animation: hb-grow 0.6s ease-out;
+}
+
+.ask-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  margin-bottom: 0.7rem;
+}
+
+.ask-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: var(--fs-xs);
+  color: var(--color-muted);
+}
+
+.ask-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-muted-soft);
+}
+
+.ask-card[data-state="waiting"] .ask-status,
+.ask-card[data-state="offline"] .ask-status {
+  color: var(--hb-attention-text);
+}
+
+.ask-card[data-state="waiting"] .ask-dot,
+.ask-card[data-state="offline"] .ask-dot {
+  background: var(--hb-attention);
+}
+
+.ask-card[data-state="answered"] .ask-dot,
+.ask-card[data-state="replied"] .ask-dot {
+  background: var(--hb-success);
+}
+
+.ask-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.ask-step {
+  appearance: none;
+  font: inherit;
+  font-size: var(--fs-xs);
+  padding: 0.2rem 0.7rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--color-muted);
+  cursor: pointer;
+  transition:
+    border-color var(--duration) var(--ease),
+    background-color var(--duration) var(--ease),
+    color var(--duration) var(--ease);
+}
+
+.ask-step:hover {
+  color: var(--color-fg);
+}
+
+.ask-step[data-done="1"] {
+  color: var(--color-fg-2);
+}
+
+.ask-step[aria-current="step"] {
+  border-color: var(--hb-accent);
+  background: var(--color-accent-dim);
+  color: var(--color-fg);
+}
+
+.ask-question {
+  margin: 0 0 0.7rem;
+  font-size: var(--fs-base);
+  font-weight: var(--fw-medium);
+  line-height: 1.45;
+  color: var(--color-fg);
+}
+
+.ask-options {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.ask-option {
+  appearance: none;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 0.7rem;
+  width: 100%;
+  margin: 0;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color var(--duration) var(--ease),
+    background-color var(--duration) var(--ease);
+}
+
+.ask-option:hover {
+  border-color: var(--color-border-strong);
+  background: var(--color-hover);
+}
+
+.ask-option:focus-visible,
+.ask-step:focus-visible,
+.ask-other-field:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+.ask-option[aria-checked="true"] {
+  border-color: var(--hb-accent);
+  background: var(--color-accent-dim);
+}
+
+.ask-option.is-other {
+  border-style: dashed;
+  background: transparent;
+}
+
+.ask-key {
+  display: inline-grid;
+  place-items: center;
+  min-width: 1.25rem;
+  height: 1.25rem;
+  margin-top: 0.05rem;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  color: var(--color-muted);
+}
+
+.ask-option[aria-checked="true"] .ask-key {
+  border-color: var(--hb-accent);
+  background: var(--hb-accent);
+  color: var(--color-page);
+}
+
+.ask-label {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  color: var(--color-fg);
+}
+
+.ask-option.is-other .ask-label {
+  font-weight: 400;
+  color: var(--color-fg-2);
+}
+
+.ask-tag {
+  padding: 0.05rem 0.5rem;
+  border-radius: var(--radius-pill);
+  background: var(--color-accent-dim);
+  color: var(--hb-accent);
+  font-size: 0.6875rem;
+  font-weight: var(--fw-medium);
+}
+
+.ask-desc {
+  display: block;
+  margin-top: 0.15rem;
+  font-size: 0.8125rem;
+  color: var(--color-fg-2);
+}
+
+.ask-other-field {
+  width: 100%;
+  min-height: 2.6rem;
+  padding: 0.55rem 0.7rem;
+  resize: vertical;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-inset);
+  color: var(--color-fg);
+  font: inherit;
+  font-size: var(--fs-sm);
+}
+
+.ask-other-field[hidden] {
+  display: none;
+}
+
+.ask-foot {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 0.8rem;
+}
+
+.ask-skip {
+  margin-left: -0.85rem;
+}
+
+.ask-hint {
+  margin-left: auto;
+  font-size: var(--fs-xs);
+  color: var(--color-muted-soft);
+}
+
+.ask-card[data-state="sending"] .ask-body,
+.ask-card[data-state="sending"] .ask-foot {
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+/* Answered: the card settles to a short record of what was asked. */
+.ask-summary {
+  display: grid;
+  gap: 0.3rem;
+  margin: 0;
+}
+
+.ask-summary {
+  gap: 0.65rem;
+}
+
+.ask-summary > div {
+  display: grid;
+  gap: 0.15rem;
+  font-size: var(--fs-sm);
+}
+
+.ask-summary dt {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  min-width: 0;
+  color: var(--color-fg-2);
+}
+
+.ask-summary-header {
+  flex-shrink: 0;
+  font-size: var(--fs-xs);
+  color: var(--color-muted);
+}
+
+/* The question as asked, cut to two lines; the full text is on hover. */
+.ask-summary-question {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  min-width: 0;
+}
+
+.ask-summary dd {
+  margin: 0;
+  color: var(--color-fg);
+  font-weight: var(--fw-medium);
+}
+
+.ask-summary-reply dt {
+  font-size: var(--fs-xs);
+  color: var(--color-muted);
+}
+
+/* The asking tool's own row: waiting on you, not working. */
+.tool[data-state="waiting"]::before {
+  background: var(--hb-attention);
+  animation: none;
+}
+
+.tool[data-state="waiting"] .tool-status-dot {
+  background: var(--hb-attention);
+  animation: none;
+}
+
+.tool-cluster[data-waiting="1"] > .tool-cluster-summary::after {
+  background: var(--hb-attention);
+  animation: none;
+}
+
+@media (max-width: 640px) {
+  .ask-hint {
+    display: none;
+  }
+}
+
+/* A card reopened from history is already settled: no growing line. */
+.ask-card.is-stored::before {
+  animation: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ask-card::before {
+    animation: none !important;
+  }
 }

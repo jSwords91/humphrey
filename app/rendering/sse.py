@@ -14,6 +14,7 @@ import json
 from typing import Any
 
 from app.tools import tool_label
+from app.tools.ask_user_question import NAME as ASK_USER_QUESTION
 from brain.events import (
     AgentEndEvent,
     AgentEvent,
@@ -108,6 +109,8 @@ class SseRenderer:
                     payload["diff"] = patch[:MAX_DIFF_CHARS]
                 if "exit_code" in details:
                     payload["exit_code"] = details["exit_code"]
+                if event.tool_name == ASK_USER_QUESTION and "questions" in details:
+                    payload["question"] = details
             return payload
         return None
 

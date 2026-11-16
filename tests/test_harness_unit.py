@@ -224,3 +224,9 @@ def test_sse_renderer_flattens_thinking_channel_to_its_own_wire_type() -> None:
         MessageUpdateEvent(message=partial, delta="hmm", channel="thinking")
     )
     assert thinking_wire == {"type": "thinking_delta", "text": "hmm"}
+
+
+def test_app_harness_allows_fifty_tool_turns() -> None:
+    from app.agent import build_harness
+
+    assert build_harness().config.max_turns == 50
