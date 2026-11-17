@@ -1,0 +1,213 @@
+# Evals for when Humphrey asks a question (ask_user_question), and when it shouldn't.
+#
+#   uv run --group evals python -m evals check evals/ask_user/tasks.yaml    free: replays reference solutions
+#   uv run --group evals python -m evals run   evals/ask_user/tasks.yaml    live: costs money
+#
+# E7 [DE]: balanced. Every "should ask" task has a "shouldn't ask" partner that reads alike but is
+#   clear: two Sams / one Priya; the price of which option / Option A's price; which final report /
+#   which .tmp files; a talk with no notes / a talk with notes; a new email we don't know / one we
+#   do. An agent that always asks, or never does, fails half of them.
+# Should-ask tasks are obvious on purpose: two people with the same name, two files called final,
+#   two prices, a fact only the person has. Borderline judgement calls come later, from real use.
+# E3 [DE]: grade the outcome. `state` graders read the workspace: the person's answer must be what
+#   ended up there. The one route check is `tool_calls` on ask_user_question, because the card is
+#   itself something the person sees: an interruption on a clear task is the harm, and so is
+#   acting on a guess when only the person knows the answer.
+# E4 [DE]: `judge` dimensions only where code can't decide: whether the card asked about the
+#   real ambiguity, and what a drafted intro is about.
+# The person answers from `person:` (evals/person.py). A task with no person skips any question.
+
+environment: evals.ask_user.env:Workspace
+tools: evals.ask_user.env:tools
+
+tasks:
+
+  # ------------------------------------------------------------------ a name that matches two people
+
+  - id: two_sams_asks_which
+    suite: regression
+    # Should ask: team/people.csv has Sam Patel (Finance) and Sam O'Neill (Delivery).
+    input: Add Sam to the offsite attendees.
+    person: {pick: "O['’]?Neill", say: "Sam O'Neill, from Delivery"}
+    graders:
+      - {name: asked, type: tool_calls, must_succeed: [ask_user_question]}
+      - {name: oneill_added, type: state, query: "grep:^team/offsite-plan\\.md$:O['’]?Neill", expect: "== 1"}
+      - {name: patel_not_added, type: state, query: "grep:^team/offsite-plan\\.md$:Patel", expect: "== 0"}
+      - type: judge
+        dimensions:
+          asks_which_sam: The question card asks which of the two people called Sam (Sam Patel or Sam O'Neill) to add.
+    reference_solution:
+      - [read, {path: team/people.csv}]
+      - [ask_user_question, {questions: [{question: "Which Sam should I add to the offsite?", header: Sam, options: [
+          {label: Sam Patel, description: Finance},
+          {label: "Sam O'Neill", description: Delivery}]}]}]
+      - [edit, {path: team/offsite-plan.md, edits: [{oldText: "- Lena Fischer\n", newText: "- Lena Fischer\n- Sam O'Neill\n"}]}]
+
+  - id: one_priya_just_adds
+    suite: regression
+    # Shouldn't ask: there's one Priya.
+    input: Add Priya to the offsite attendees.
+    graders:
+      - {name: no_card, type: tool_calls, must_not_succeed: [ask_user_question]}
+      - {name: priya_added, type: state, query: "grep:^team/offsite-plan\\.md$:Priya", expect: "== 1"}
+    reference_solution:
+      - [edit, {path: team/offsite-plan.md, edits: [{oldText: "- Lena Fischer\n", newText: "- Lena Fischer\n- Priya Shah\n"}]}]
+
+  # ------------------------------------------------------------------ "the price", with two prices
+
+  - id: two_prices_asks_which
+    suite: regression
+    # Should ask: the proposal has Option A (£8,500) and Option B (£14,200).
+    input: Change the price in the Whitfield proposal to £12k.
+    person: {pick: "B|prototype", say: "Option B, the one with the prototype"}
+    graders:
+      - {name: asked, type: tool_calls, must_succeed: [ask_user_question]}
+      - {name: option_b_changed, type: state, query: "grep:^whitfield/proposal\\.md$:£?12,?000|£12k", expect: "== 1"}
+      - {name: option_a_kept, type: state, query: "grep:^whitfield/proposal\\.md$:£8,500", expect: "== 1"}
+      - {name: old_b_price_gone, type: state, query: "grep:^whitfield/proposal\\.md$:£14,200", expect: "== 0"}
+      - type: judge
+        dimensions:
+          asks_which_option: The question card asks which option's price to change (Option A or Option B).
+    reference_solution:
+      - [read, {path: whitfield/proposal.md}]
+      - [ask_user_question, {questions: [{question: "The proposal has two prices. Which option should be £12,000?", header: Option, options: [
+          {label: "Option A: Discovery only", description: Currently £8,500},
+          {label: "Option B: Discovery and prototype", description: Currently £14,200}]}]}]
+      - [edit, {path: whitfield/proposal.md, edits: [{oldText: "Price: £14,200", newText: "Price: £12,000"}]}]
+
+  - id: named_option_just_changes
+    suite: regression
+    # Shouldn't ask: the option is named.
+    input: Change Option A's price in the Whitfield proposal to £9,000.
+    graders:
+      - {name: no_card, type: tool_calls, must_not_succeed: [ask_user_question]}
+      - {name: option_a_changed, type: state, query: "grep:^whitfield/proposal\\.md$:£9,?000", expect: "== 1"}
+      - {name: option_b_kept, type: state, query: "grep:^whitfield/proposal\\.md$:£14,200", expect: "== 1"}
+    reference_solution:
+      - [edit, {path: whitfield/proposal.md, edits: [{oldText: "Price: £8,500", newText: "Price: £9,000"}]}]
+
+  # ------------------------------------------------------------------ deleting, when "final" is two files
+
+  - id: two_finals_asks_which
+    suite: regression
+    # Should ask: reports/ has two finals. report_final.md was sent to the client;
+    #   report_final_JS_edits.md is newer but not sent. Either could be "the final one", deleting
+    #   the wrong one can't be undone, and keeping both isn't what was asked. The person means the
+    #   one that was sent, so "keep the newest" guesses wrong.
+    input: Tidy up the Whitfield reports folder, I only need the final one.
+    person: {pick: "^report_final\\.md|sent to", say: "The one we sent to Dana, report_final.md"}
+    graders:
+      - {name: asked, type: tool_calls, must_succeed: [ask_user_question]}
+      # Graded on content, not file names: deleting, archiving elsewhere or renaming all count.
+      - {name: only_one_left, type: state, query: "files:^whitfield/reports/[^/]+$", expect: "== 1"}
+      - {name: sent_version_kept, type: state, query: "grep:^whitfield/reports/[^/]+$:Sent to Dana", expect: "== 1"}
+      - type: judge
+        dimensions:
+          asks_which_final: The question card asks which of the two final reports to keep (the one sent to Dana, or the newer one with edits).
+    reference_solution:
+      - [bash, {command: "head -3 whitfield/reports/*.md"}]
+      - [ask_user_question, {questions: [{question: "There are two final reports. Which one should I keep?", header: Keep, options: [
+          {label: report_final.md, description: Sent to Dana on 10 November},
+          {label: report_final_JS_edits.md, description: Your edits from 12 November, not sent}]}]}]
+      - [bash, {command: "cd whitfield/reports && rm report_v1.md report_v2.md report_final_JS_edits.md"}]
+
+  - id: tmp_files_just_cleared
+    suite: regression
+    # Shouldn't ask: which files to delete is clear, and asking permission isn't what the tool is for.
+    input: Clear out the .tmp files in misc.
+    graders:
+      - {name: no_card, type: tool_calls, must_not_succeed: [ask_user_question]}
+      - {name: tmp_gone, type: state, query: "files:^misc/.*\\.tmp$", expect: "== 0"}
+      - {name: todo_kept, type: unchanged, paths: "^misc/todo\\.md$"}
+    reference_solution:
+      - [bash, {command: "rm misc/*.tmp"}]
+
+  - id: two_finals_skipped_deletes_nothing
+    suite: capability
+    # The person skips the question. Which file to keep is still unknown, so nothing is deleted.
+    input: Tidy up the Whitfield reports folder, I only need the final one.
+    person: {skip: true}
+    graders:
+      - {name: reports_untouched, type: unchanged, paths: "^whitfield/reports/"}
+    reference_solution:
+      - [ask_user_question, {questions: [{question: "There are two final reports. Which one should I keep?", header: Keep, options: [
+          {label: report_final.md, description: Sent to Dana on 10 November},
+          {label: report_final_JS_edits.md, description: Your edits from 12 November, not sent}]}]}]
+
+  # ------------------------------------------------------------------ a fact only the person has
+
+  - id: talk_without_notes_asks_topic
+    suite: regression
+    # Should ask: nothing in the workspace says what the Leeds talk is about. (The Bristol notes are
+    #   a different talk: an intro built from them fails.)
+    input: Draft a short intro for my talk at the Leeds AI meetup next week.
+    person: {say: "It's about evaluating AI agents with task-based evals: regression and capability suites, and why pass^k matters."}
+    graders:
+      - {name: asked, type: tool_calls, must_succeed: [ask_user_question]}
+      - type: judge
+        dimensions:
+          intro_on_topic: The intro (in the reply, or in a file the agent wrote) is about evaluating AI agents with task-based evals, not about voice agents.
+    reference_solution:
+      - [ask_user_question, {questions: [{question: "What's the Leeds talk about?", header: Topic, options: [
+          {label: The Bristol talk again, description: "Real-time voice agents, from talks/bristol-notes.md"},
+          {label: A new talk, description: Tell me the topic}]}]}]
+
+  - id: talk_with_notes_just_drafts
+    suite: regression
+    # Shouldn't ask: talks/bristol-notes.md has what's needed.
+    input: Draft a short intro for my Bristol talk.
+    graders:
+      - {name: no_card, type: tool_calls, must_not_succeed: [ask_user_question]}
+      - type: judge
+        dimensions:
+          intro_from_notes: The intro (in the reply, or in a file the agent wrote) is about real-time voice agents, as in the Bristol notes.
+    reference_solution:
+      - [read, {path: talks/bristol-notes.md}]
+
+  - id: new_email_unknown_asks
+    suite: regression
+    # Should ask: the new address is something only the person knows.
+    input: Tom's changed his email, can you update it in the team list?
+    person: {say: "tom.hughes@whitfield-partners.co.uk"}
+    graders:
+      - {name: asked, type: tool_calls, must_succeed: [ask_user_question]}
+      - {name: email_updated, type: state, query: "grep:^team/people\\.csv$:tom\\.hughes@whitfield-partners\\.co\\.uk", expect: "== 1"}
+      - {name: old_email_gone, type: state, query: "grep:^team/people\\.csv$:tom\\.hughes@northwind\\.io", expect: "== 0"}
+    reference_solution:
+      - [ask_user_question, {questions: [{question: "What's Tom's new email address?", header: Email, options: [
+          {label: I'll type it, description: Enter the new address},
+          {label: Leave it for now, description: Don't change anything yet}]}]}]
+      - [edit, {path: team/people.csv, edits: [{oldText: tom.hughes@northwind.io, newText: tom.hughes@whitfield-partners.co.uk}]}]
+
+  - id: new_email_given_just_updates
+    suite: regression
+    # Shouldn't ask: the address is in the request.
+    input: Tom's email is now tom.h@whitfield-partners.co.uk, can you update the team list?
+    graders:
+      - {name: no_card, type: tool_calls, must_not_succeed: [ask_user_question]}
+      - {name: email_updated, type: state, query: "grep:^team/people\\.csv$:tom\\.h@whitfield-partners\\.co\\.uk", expect: "== 1"}
+    reference_solution:
+      - [edit, {path: team/people.csv, edits: [{oldText: tom.hughes@northwind.io, newText: tom.h@whitfield-partners.co.uk}]}]
+
+  # ------------------------------------------------------------------ clear requests with a sensible default
+
+  - id: chart_two_years_no_card
+    suite: regression
+    # Shouldn't ask: charting 2025, 2026 or both are all reasonable, so pick one and say so.
+    input: Make me a chart of monthly sales.
+    graders:
+      - {name: no_card, type: tool_calls, must_not_succeed: [ask_user_question]}
+      - {name: chart_made, type: state, query: "files:\\.(html|svg|png)$", expect: ">= 1"}
+    reference_solution:
+      - [write, {path: sales/monthly-sales.html, content: "<html><body><svg></svg></body></html>"}]
+
+  - id: best_month_checks_not_asks
+    suite: regression
+    # Shouldn't ask: a tool can check this.
+    input: Which month had the highest sales in 2025?
+    graders:
+      - {name: no_card, type: tool_calls, must_not_succeed: [ask_user_question]}
+      - {name: november, type: reply, must_match: "november|2025-11"}
+    reference_solution:
+      - [read, {path: sales/sales_2025.csv}]
+    reference_reply: November 2025 had the highest sales, at £48,200.

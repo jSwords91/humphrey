@@ -30,3 +30,27 @@ services:
       timeout: 3s
       retries: 5
       start_period: 15s
+
+  # The evals (evals/README.md). Their tasks ask Humphrey to delete and tidy files, and its bash
+  # tool isn't confined to a trial's folder, so live runs happen in this throwaway container:
+  #   docker compose run --rm evals run evals/ask_user/tasks.yaml --trials 3
+  # Code is mounted read-only; only results/ is written back. No ports.
+  evals:
+    profiles: ["evals"]
+    build:
+      context: .
+      args:
+        UV_SYNC_ARGS: --group evals
+    entrypoint: ["python", "-m", "evals"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      HUMPHREY_EVALS_IN_CONTAINER: "1"
+    volumes:
+      - ./app:/app/app:ro
+      - ./brain:/app/brain:ro
+      - ./providers:/app/providers:ro
+      - ./skills:/app/skills:ro
+      - ./evals:/app/evals:ro
+      - ./results:/app/results

@@ -118,6 +118,12 @@ A few things worth knowing:
   browser on the same machine. That works with the Docker setup too. For a
   remote machine, sign in locally and copy the credentials file across.
 
+## Evals
+
+`evals/` holds task-based evals: Humphrey runs real tasks against a seeded workspace, and code
+and a judge grade the outcome. The first suite checks when Humphrey should ask you a question
+and when it should just get on with it. See [evals/README.md](evals/README.md).
+
 ## Layout
 
 | Path | What lives there |

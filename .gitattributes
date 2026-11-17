@@ -1,0 +1,2 @@
+# The eval seed workspace is test data: the same bytes on every machine.
+evals/ask_user/seed/** text eol=lf
