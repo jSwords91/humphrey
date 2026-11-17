@@ -30,9 +30,16 @@ WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
 CODING_TOOLS: list[AgentTool] = create_coding_tools(cwd=WORKSPACE_DIR, read_roots=(SKILLS_DIR,))
 
 
-def tools_for_run(bridge: UiBridge) -> list[AgentTool]:
-    """The tools for one run, with ask_user_question bound to its bridge."""
-    tools = list(CODING_TOOLS)
+def tools_for_run(bridge: UiBridge, workspace: Path | None = None) -> list[AgentTool]:
+    """The tools for one run, with ask_user_question bound to its bridge.
+
+    ``workspace`` roots the file tools somewhere other than WORKSPACE_DIR;
+    evals give each trial its own folder this way.
+    """
+    if workspace is None:
+        tools = list(CODING_TOOLS)
+    else:
+        tools = create_coding_tools(cwd=workspace, read_roots=(SKILLS_DIR,))
     if get_settings().ask_user_question:
         tools.append(create_ask_user_question_tool(bridge))
     return tools

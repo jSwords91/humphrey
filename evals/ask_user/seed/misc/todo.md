@@ -1,0 +1,2 @@
+- chase Dana about the board date
+- book the offsite venue deposit

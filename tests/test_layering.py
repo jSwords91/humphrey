@@ -50,3 +50,9 @@ def test_nothing_below_app_imports_app_beyond_its_settings(package: str) -> None
 
 def test_brain_does_not_import_providers() -> None:
     assert [(f, m) for f, m in _imports("brain") if _top(m) == "providers"] == []
+
+
+@pytest.mark.parametrize("package", ["app", "brain", "providers"])
+def test_nothing_imports_the_evals(package: str) -> None:
+    """evals/ sits on top: it drives Humphrey from outside, so Humphrey never depends on it."""
+    assert [(f, m) for f, m in _imports(package) if _top(m) == "evals"] == []

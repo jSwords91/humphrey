@@ -10,8 +10,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 COPY pyproject.toml uv.lock ./
-# Add `--group azure` here to include the optional Azure adapters.
-RUN uv sync --frozen --no-dev --no-install-project
+# Extra dependency groups, e.g. `--group azure` for the optional Azure adapters.
+# docker-compose.yml's evals service passes `--group evals`.
+ARG UV_SYNC_ARGS=""
+RUN uv sync --frozen --no-dev --no-install-project ${UV_SYNC_ARGS}
 
 COPY brain ./brain
 COPY providers ./providers

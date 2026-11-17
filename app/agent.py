@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import date
+from pathlib import Path
 
 from app.prompt import build_system_prompt
 from app.skills import format_skills_for_prompt
@@ -31,16 +32,17 @@ MAX_TOOL_TURNS = 50
 STATIC_SYSTEM_PROMPT = build_system_prompt(TOOLS) + format_skills_for_prompt()
 
 
-def system_prompt() -> str:
+def system_prompt(workspace: Path | None = None) -> str:
     """Recomputed per call so the date is correct across a long-lived process.
 
     Public - app/main.py also needs this ahead of build_harness() to
     estimate context size for auto-compaction, before a harness exists.
+    ``workspace`` defaults to WORKSPACE_DIR; evals pass a trial's own folder.
     """
     return (
         f"{STATIC_SYSTEM_PROMPT}\n\n"
         f"Current date: {date.today().isoformat()}\n"
-        f"Working directory: {WORKSPACE_DIR}"
+        f"Working directory: {workspace or WORKSPACE_DIR}"
     )
 
 
@@ -52,15 +54,18 @@ def build_harness(
     tools: Sequence[AgentTool] | None = None,
     before_tool_call: BeforeToolCall | None = None,
     after_tool_call: AfterToolCall | None = None,
+    workspace: Path | None = None,
 ) -> AgentHarness:
     """Construct a harness with process defaults (provider factory + tools).
 
     Pass ``tools`` from ``tools_for_run`` to bind ask_user_question to a
-    run's UI bridge; the default is ``TOOLS``, which has no UI.
+    run's UI bridge; the default is ``TOOLS``, which has no UI. Pass
+    ``workspace`` when those tools are rooted somewhere other than
+    WORKSPACE_DIR, so the prompt names the same folder.
     """
     config = AgentHarnessConfig(
         provider=provider or get_provider(),
-        system=system_prompt(),
+        system=system_prompt(workspace),
         tools=list(TOOLS if tools is None else tools),
         session_id=session_id,
         max_turns=MAX_TOOL_TURNS,
