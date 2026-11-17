@@ -40,6 +40,11 @@ from brain.provider import ModelProvider
 from brain.tool_history import repair_tool_history
 from brain.tools import AgentTool, ToolResult
 
+# How a run stopped at max_turns begins its error message. The loop ends such a run with an
+#   "error" message, like a provider failure; this is how a reader (evals) tells them apart.
+MAX_TURNS_PREFIX = "Stopped after"
+
+
 BeforeToolCall = Callable[[ToolCall], Awaitable[tuple[bool, str | None]]]
 AfterToolCall = Callable[
     [ToolCall, ToolResult, bool],
@@ -195,7 +200,7 @@ async def run_agent_loop(
                 if turn > max_turns:
                     error = _failure_message(
                         provider.deployment_name,
-                        f"Stopped after {max_turns} tool turns to prevent loops.",
+                        f"{MAX_TURNS_PREFIX} {max_turns} tool turns to prevent loops.",
                     )
                     messages.append(error)
                     new_messages.append(error)

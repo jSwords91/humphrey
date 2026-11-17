@@ -19,8 +19,13 @@ azure = [
     "azure-identity==1.23.1",
     "azure-storage-blob==12.26.0",
 ]
+# The eval harness (python -m evals): only adds a YAML reader.
+evals = [
+    "pyyaml>=6.0",
+]
 dev = [
     {include-group = "azure"},
+    {include-group = "evals"},
     "pytest>=8.3.0",
     "pytest-asyncio>=0.25.0",
     "httpx>=0.28.0",
