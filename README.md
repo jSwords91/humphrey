@@ -122,7 +122,9 @@ A few things worth knowing:
 
 `evals/` holds task-based evals: Humphrey runs real tasks against a seeded workspace, and code
 and a judge grade the outcome. The first suite checks when Humphrey should ask you a question
-and when it should just get on with it. See [evals/README.md](evals/README.md).
+and when it should just get on with it. It's also how the default model was chosen:
+gpt-6.1-sol asks the same as gpt-5.6-sol but is safer when you skip a question. See
+[evals/README.md](evals/README.md).
 
 ## Layout
 

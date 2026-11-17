@@ -91,6 +91,52 @@ there are transcripts of Humphrey asking when it shouldn't have, or not asking w
   used only where code can't decide. Check it against your own reading of some transcripts
   before you trust it.
 
+## What it's told me so far
+
+### Upgrading the model
+
+I wanted to move Humphrey from gpt-5.6-sol to gpt-6.1-sol, so I ran the suite on both, three
+trials per task, in the container, with gpt-6.1-sol judging both runs:
+
+```bash
+docker compose run --rm evals run evals/ask_user/tasks.yaml --trials 3 --model gpt-5.6-sol
+docker compose run --rm evals run evals/ask_user/tasks.yaml --trials 3 --model gpt-6.1-sol \
+    --results results/gpt-6.1-sol --compare results/latest.json
+```
+
+| | gpt-5.6-sol | gpt-6.1-sol |
+| --- | --- | --- |
+| Regression tasks passing every trial | 11 of 12 | 11 of 12 |
+| Skipped "which final?", left the reports alone | 0 of 3 | 2 of 3 |
+| Tokens per trial, whole suite | about 97k | about 105k |
+| Seconds per trial, whole suite | 191 | 187 |
+
+No regression task changed. Both models ask when they should and don't when they shouldn't,
+with one exception they share (below). The difference is what happens when you skip a question
+that matters: gpt-5.6-sol picked a report and deleted the rest every time, while gpt-6.1-sol
+usually left the folder alone and said it needed to know which one you meant. That's worth
+about 8% more tokens to me, so gpt-6.1-sol is now the default.
+
+The two models also guessed in opposite directions after the skip: gpt-5.6-sol kept the report
+sent to the client, gpt-6.1-sol the newer unsent one. That's good evidence the ambiguity in that
+task is real.
+
+### A gap neither model closes
+
+"Draft a short intro for my Bristol talk" fails on both, every time. There are notes for the
+talk in the workspace, but Humphrey asks what the talk is about instead of looking, then writes
+a template with a [topic] placeholder. A bigger model doesn't fix it, so it's probably the
+prompt: nothing tells Humphrey to look in the workspace before asking. That's the next change to
+try, and this suite will show whether it works.
+
+### The first run found a bug in my task, not in Humphrey
+
+The first version of the "which final?" task had `report_final.md` and `report_final_2.md`.
+Humphrey kept `final_2`, which was newer by name and by file time. A person would have done the
+same, so the task wasn't really ambiguous. Now the two finals genuinely compete (one sent, one
+newer but unsent), and the seed files all get the same time. Read the transcripts before you
+blame the agent.
+
 ## Adding a task
 
 1. If it needs new files, add them to `ask_user/seed/`. Keep each task's files its own, so one

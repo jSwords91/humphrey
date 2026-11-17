@@ -81,7 +81,9 @@ def get_settings() -> Settings:
         azure_openai_deployment=os.environ.get("AZURE_OPENAI_DEPLOYMENT", ""),
         azure_openai_api_version=os.environ.get("AZURE_OPENAI_API_VERSION", "2024-10-21"),
         openai_api_key=os.environ.get("OPENAI_API_KEY", ""),
-        openai_model=os.environ.get("OPENAI_MODEL", "gpt-5.6-sol"),
+        # gpt-6.1-sol since 2026-11-17: same ask_user_question behaviour as
+        # gpt-5.6-sol in evals/, and safer after a skipped question.
+        openai_model=os.environ.get("OPENAI_MODEL", "gpt-6.1-sol"),
         openai_models=tuple(
             m.strip() for m in os.environ.get("OPENAI_MODELS", "").split(",") if m.strip()
         ),
