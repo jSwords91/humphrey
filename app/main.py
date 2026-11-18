@@ -126,12 +126,14 @@ class SessionMessageOut(BaseModel):
     # context_summary: a synthetic auto-compaction summary (app/context_window.py),
     # not something the user typed - rendered distinctly by the frontend.
     # question: an ask_user_question card, with its answer in `question`.
-    role: Literal["user", "assistant", "context_summary", "question"]
+    # tool: a tool run, its result in `content` and its card in `tool`.
+    role: Literal["user", "assistant", "context_summary", "question", "tool"]
     content: str
     ts: int | None = None
     # URLs of the images attached to a user turn (GET /api/sessions/{id}/images/...).
     images: list[str] = Field(default_factory=list)
     question: dict[str, Any] | None = None
+    tool: dict[str, Any] | None = None
 
 
 class SessionOut(BaseModel):
@@ -395,6 +397,7 @@ async def get_session(session_id: str) -> SessionOut:
                 ts=row.ts,
                 images=[f"/api/sessions/{session.id}/images/{digest}" for digest in row.images],
                 question=row.question,
+                tool=row.tool,
             )
             for row in session.history_rows()
         ],

@@ -2272,6 +2272,61 @@
   }
 
   /**
+   * Settle a tool card with its outcome: the live stream's tool_end, or a
+   * tool row from a reopened chat (which has no duration, so ``ms`` is null).
+   * Returns whether the run failed.
+   * @param {any} card from appendToolRow
+   * @param {string} tool
+   * @param {string} rawResult
+   * @param {{ is_error?: unknown, diff?: unknown, exit_code?: unknown, question?: any }} outcome
+   * @param {{ toolClusters?: Map<string, any> }} state
+   * @param {number | null} ms
+   */
+  function finishToolCard(card, tool, rawResult, outcome, state, ms) {
+    const blurb = summarizeToolResult(tool, rawResult, outcome);
+    const isError = outcome.is_error === true;
+    const took = ms == null ? "" : ` · ${ms} ms`;
+    // Edits and shell runs carry their outcome on the row itself.
+    card.meta.textContent =
+      tool === "edit" || tool === "bash" ? `${blurb}${took}` : ms == null ? (isError ? "error" : "done") : `${ms} ms`;
+    if (tool === "ask_user_question" && outcome.question) {
+      const words = { answered: "answered", skipped: "skipped", replied: "replied", stopped: "no answer" };
+      card.meta.textContent = words[/** @type {keyof typeof words} */ (outcome.question.status)] || "done";
+    }
+    if (typeof outcome.diff === "string" && outcome.diff) {
+      const diffLabel = document.createElement("span");
+      diffLabel.className = "tool-section-label";
+      diffLabel.textContent = "Changes";
+      (card.output.previousElementSibling || card.output).before(diffLabel, renderDiff(outcome.diff));
+    }
+    card.el.dataset.state = isError ? "error" : "done";
+    stopDotPulse(card.el);
+    card.preview = blurb;
+    card.toggle.setAttribute(
+      "aria-label",
+      ms == null
+        ? `${card.display}, ${blurb}. Activate to show full output.`
+        : `${card.display}, ${blurb}, ${ms} milliseconds. Activate to show full output.`,
+    );
+    card.output.textContent = prettyResult(rawResult);
+
+    if (card.el.dataset.userToggled !== "1") {
+      setToolExpanded(card, isError);
+    }
+    const cluster = state.toolClusters?.get(tool);
+    if (cluster) {
+      cluster.running = Math.max(0, cluster.running - 1);
+      if (isError) {
+        cluster.error += 1;
+      } else {
+        cluster.done += 1;
+      }
+      updateToolClusterChrome(cluster);
+    }
+    return isError;
+  }
+
+  /**
    * @param {{ toggle: HTMLButtonElement, panel: HTMLElement, el: HTMLElement }} card
    * @param {boolean} open
    */
@@ -3039,7 +3094,7 @@
       }
       const data = await res.json();
       const rows = (data.messages || []).filter(
-        (m) => m && (m.content || (Array.isArray(m.images) && m.images.length > 0)),
+        (m) => m && (m.content || m.role === "tool" || (Array.isArray(m.images) && m.images.length > 0)),
       );
       // `messages` counts the user/assistant turns shown in the UI; a
       // context-summary row is rendered below but kept out of it.
@@ -3068,9 +3123,34 @@
       setToolStat("—");
       /** @type {{ ts: number, el: Element }[]} */
       const placed = [];
+      // A model step's tool runs share one group, as they did live.
+      /** @type {any} */
+      let toolGroup = null;
       for (const [i, msg] of rows.entries()) {
         let el;
-        if (msg.role === "context_summary") {
+        if (msg.role !== "tool" || (toolGroup && msg.tool && msg.tool.step !== toolGroup.step)) {
+          toolGroup = null;
+        }
+        if (msg.role === "tool" && msg.tool) {
+          const t = msg.tool;
+          toolGroup = toolGroup || {
+            toolEls: new Map(),
+            toolGroupEl: null,
+            toolGroupCount: 0,
+            toolClusters: new Map(),
+            turn: null,
+            step: t.step,
+          };
+          const name = String(t.name || "tool");
+          const callId = String(t.call_id || crypto.randomUUID());
+          const firstInGroup = toolGroup.toolGroupCount === 0;
+          const card = appendToolRow(name, callId, t.args || {}, typeof t.label === "string" ? t.label : name, toolGroup);
+          finishToolCard(card, name, String(msg.content || ""), t, toolGroup, null);
+          liveTools.delete(callId);
+          // Artefacts are placed before a top-level row, so a group is placed
+          // once, by its first run: a file a run made goes after its group.
+          el = firstInGroup ? toolGroup.toolGroupEl : null;
+        } else if (msg.role === "context_summary") {
           el = appendMessage("context-summary", msg.content, { animate: false });
         } else if (msg.role === "question") {
           // Only a last, unanswered card stays answerable.
@@ -3096,6 +3176,7 @@
         const next = placed.find((row) => row.ts > (art.created_ms ?? 0));
         placeArtifact(art, { animate: false, before: next ? next.el : null });
       }
+      setToolStat("—"); // drawing past tool runs isn't activity
       setActive(messages.length > 0);
       setRunning(false);
       updateStats();
@@ -3400,7 +3481,6 @@
       const tool = String(event.tool ?? "tool");
       const label = typeof event.label === "string" ? event.label : tool;
       const rawResult = String(event.result ?? "");
-      const result = prettyResult(rawResult);
       let card = callId ? state.toolEls.get(callId) : undefined;
 
       if (!card) {
@@ -3420,43 +3500,7 @@
       }
 
       const ms = Math.max(1, Math.round(performance.now() - card.started));
-      const blurb = summarizeToolResult(tool, rawResult, event);
-      const isError = event.is_error === true;
-      // Edits and shell runs carry their outcome on the row itself.
-      card.meta.textContent = tool === "edit" || tool === "bash" ? `${blurb} · ${ms} ms` : `${ms} ms`;
-      if (tool === "ask_user_question" && event.question) {
-        const words = { answered: "answered", skipped: "skipped", replied: "replied", stopped: "no answer" };
-        card.meta.textContent = words[/** @type {keyof typeof words} */ (event.question.status)] || "done";
-      }
-      if (typeof event.diff === "string" && event.diff) {
-        const diffLabel = document.createElement("span");
-        diffLabel.className = "tool-section-label";
-        diffLabel.textContent = "Changes";
-        (card.output.previousElementSibling || card.output).before(diffLabel, renderDiff(event.diff));
-      }
-      card.el.dataset.state = isError ? "error" : "done";
-      stopDotPulse(card.el);
-      card.preview = blurb;
-      card.toggle.setAttribute(
-        "aria-label",
-        `${card.display}, ${blurb}, ${ms} milliseconds. Activate to show full output.`,
-      );
-      card.output.textContent = result;
-
-      const userToggled = card.el.dataset.userToggled === "1";
-      if (!userToggled) {
-        setToolExpanded(card, isError);
-      }
-      const cluster = state.toolClusters?.get(tool);
-      if (cluster) {
-        cluster.running = Math.max(0, cluster.running - 1);
-        if (isError) {
-          cluster.error += 1;
-        } else {
-          cluster.done += 1;
-        }
-        updateToolClusterChrome(cluster);
-      }
+      const isError = finishToolCard(card, tool, rawResult, event, state, ms);
       if (callId) {
         liveTools.delete(callId);
       }
