@@ -169,6 +169,10 @@ Humphrey somewhere you're comfortable with that (the Docker setup is a good
 default) and don't expose its port beyond your machine; `docker-compose.yml`
 binds it to localhost for this reason.
 
+A `bash` command is stopped after two minutes unless the model asks for
+longer, up to ten, so one that never exits (a server, a prompt waiting for
+input) can't hold up a turn.
+
 ## Artefacts
 
 Any file the agent creates or changes in the workspace (via `write`, `edit`,
