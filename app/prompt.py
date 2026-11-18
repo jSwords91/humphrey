@@ -9,9 +9,17 @@ tool list here was a hand-maintained paragraph.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
+from pathlib import Path
+from xml.sax.saxutils import quoteattr
 
 from brain.tools import AgentTool
+
+logger = logging.getLogger(__name__)
+
+# Standing instructions the person keeps in the workspace (see README).
+AGENTS_FILE_NAME = "AGENTS.md"
 
 PREAMBLE = (
     "You are Humphrey, a helpful assistant.\n\n"
@@ -56,3 +64,37 @@ def build_system_prompt(tools: Sequence[AgentTool]) -> str:
         f"{format_available_tools(tools)}\n\n"
         f"Guidance:\n{guidance}"
     )
+
+
+def format_project_context(path: Path, content: str) -> str:
+    """Wrap an instructions file in tau's (and Pi's) project-context wording."""
+    return "\n".join(
+        [
+            "\n\n<project_context>",
+            "",
+            "Project-specific instructions and guidelines:",
+            "",
+            f"<project_instructions path={quoteattr(str(path))}>",
+            content,
+            "</project_instructions>",
+            "",
+            "</project_context>",
+        ]
+    )
+
+
+def workspace_instructions(workspace: Path) -> str:
+    """The workspace's AGENTS.md as a prompt section, or "" when there's none.
+
+    Read on every call, so an edit applies from the next message. An empty or
+    unreadable file adds nothing; it never stops a turn.
+    """
+    path = workspace / AGENTS_FILE_NAME
+    try:
+        content = path.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return ""
+    except (OSError, UnicodeDecodeError) as exc:
+        logger.warning("couldn't read %s, so it was left out of the prompt: %s", path, exc)
+        return ""
+    return format_project_context(path, content) if content else ""

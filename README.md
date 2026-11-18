@@ -173,6 +173,14 @@ A `bash` command is stopped after two minutes unless the model asks for
 longer, up to ten, so one that never exits (a server, a prompt waiting for
 input) can't hold up a turn.
 
+## Standing instructions
+
+Put instructions you want in every chat in `AGENTS.md` at the top of the
+workspace: how you like replies, where files should go, anything Humphrey
+should always know. It's sent to the model with each message, so an edit
+applies from your next one. Keep it short, since every message carries it.
+Humphrey can read and edit it too, like any other workspace file.
+
 ## Artefacts
 
 Any file the agent creates or changes in the workspace (via `write`, `edit`,
