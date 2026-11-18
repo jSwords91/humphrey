@@ -1,8 +1,10 @@
 (() => {
   const SESSION_KEY = "humphrey.sessionId";
-  // Replaced from /healthz: the budget auto-compaction works to, so the
-  // context bar measures against the same number as the server.
-  let contextBudget = 128_000;
+  // The context bar measures against the window the server compacts the
+  // chosen model to: that model's own from /api/models, or, for a model with
+  // none, /healthz's fallback.
+  let fallbackBudget = 128_000;
+  let contextBudget = fallbackBudget;
 
   const stage = document.getElementById("stage");
   const thread = document.getElementById("thread");
@@ -294,8 +296,17 @@
   const effortSelect = /** @type {HTMLSelectElement | null} */ (document.getElementById("effort-select"));
   /** @type {string | null} null = the server's default (REASONING_EFFORT) */
   let selectedEffort = null;
-  /** @type {{ efforts?: Record<string, string[]>, default_effort?: string | null, default: string } | null} */
+  /** @type {{ efforts?: Record<string, string[]>, default_effort?: string | null, default: string,
+   *   context_windows?: Record<string, number> } | null} */
   let modelsInfo = null;
+
+  /** Point the context bar at the chosen model's window. */
+  function applyContextBudget() {
+    const model = selectedModel || (modelsInfo && modelsInfo.default);
+    const own = modelsInfo && modelsInfo.context_windows && model ? modelsInfo.context_windows[model] : 0;
+    contextBudget = Number(own) > 0 ? Number(own) : fallbackBudget;
+    updateStats();
+  }
 
   function renderEffortPicker() {
     if (!effortRow || !effortSelect || !modelsInfo) {
@@ -375,6 +386,7 @@
     modelSelect.disabled = !info.selectable || models.length < 2;
     modelsInfo = info;
     renderEffortPicker();
+    applyContextBudget();
     modelSelect.title = modelSelect.value;
     if (modelHint) {
       const hints = {
@@ -411,6 +423,7 @@
     modelSelect.title = selectedModel;
     writeStored(MODEL_KEY, selectedModel);
     renderEffortPicker(); // the new model may offer different levels
+    applyContextBudget(); // and have a different context window
     showToast(
       stage.dataset.running === "1"
         ? `Switched to ${selectedModel} from your next message`
@@ -3119,7 +3132,8 @@
       }
       const data = await res.json();
       if (Number(data.context_window_tokens) > 0) {
-        contextBudget = Number(data.context_window_tokens);
+        fallbackBudget = Number(data.context_window_tokens);
+        applyContextBudget();
       }
       const providerLabels = {
         mock: "mock",

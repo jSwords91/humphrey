@@ -183,6 +183,8 @@ async def test_with_the_plan_chosen_models_and_chats_use_it(local: AsyncClient, 
             "gpt-5.6-sol": ["low", "medium", "high", "xhigh", "max"],
         },
         "default_effort": "medium",
+        # Each model's window, from the plan's list.
+        "context_windows": {"gpt-6.1-sol": 272000, "gpt-5.6-sol": 272000},
     }
     assert (await local.get("/healthz")).json()["provider"] == "chatgpt"
 

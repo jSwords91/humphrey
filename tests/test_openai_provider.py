@@ -457,6 +457,8 @@ async def test_models_endpoint_lists_openai_models(monkeypatch: pytest.MonkeyPat
         # Chat Completions models: no reasoning effort to choose.
         "efforts": {"gpt-a": [], "gpt-b": [], "gpt-c": []},
         "default_effort": "medium",
+        # An API key lists no windows: each model uses the default.
+        "context_windows": {"gpt-a": 128000, "gpt-b": 128000, "gpt-c": 128000},
     }
     assert rejected.status_code == 422
     assert rejected.json()["detail"] == "Unknown model: gpt-z"  # not just a malformed body
@@ -477,6 +479,7 @@ async def test_models_endpoint_reports_mock_as_fixed() -> None:
         "labels": {},
         "efforts": {},
         "default_effort": None,
+        "context_windows": {"mock": 128000},
     }
 
 
