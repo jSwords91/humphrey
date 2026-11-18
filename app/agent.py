@@ -13,7 +13,7 @@ from collections.abc import Sequence
 from datetime import date
 from pathlib import Path
 
-from app.prompt import build_system_prompt, workspace_instructions
+from app.prompt import build_system_prompt
 from app.skills import format_skills_for_prompt
 from app.tools import TOOLS, WORKSPACE_DIR
 from brain.harness import AfterToolCall, AgentHarness, AgentHarnessConfig, BeforeToolCall
@@ -33,18 +33,16 @@ STATIC_SYSTEM_PROMPT = build_system_prompt(TOOLS) + format_skills_for_prompt()
 
 
 def system_prompt(workspace: Path | None = None) -> str:
-    """Recomputed per call so the date is correct across a long-lived process,
-    and the workspace's AGENTS.md applies from the message after an edit.
+    """Recomputed per call so the date is correct across a long-lived process.
 
     Public - app/main.py also needs this ahead of build_harness() to
     estimate context size for auto-compaction, before a harness exists.
     ``workspace`` defaults to WORKSPACE_DIR; evals pass a trial's own folder.
     """
-    root = workspace or WORKSPACE_DIR
     return (
-        f"{STATIC_SYSTEM_PROMPT}{workspace_instructions(root)}\n\n"
+        f"{STATIC_SYSTEM_PROMPT}\n\n"
         f"Current date: {date.today().isoformat()}\n"
-        f"Working directory: {root}"
+        f"Working directory: {workspace or WORKSPACE_DIR}"
     )
 
 
