@@ -39,6 +39,24 @@ def encode_sse(payload: dict[str, Any]) -> str:
 MAX_DIFF_CHARS = 20_000
 
 
+def tool_outcome(tool_name: str, details: Any) -> dict[str, Any]:
+    """What a tool card shows beyond its text result, from the tool's
+    ``details``: an edit's diff, a bash run's exit code, a question card.
+    Shared by the live stream and a reopened chat's history, so a card
+    looks the same either way."""
+    fields: dict[str, Any] = {}
+    if not isinstance(details, dict):
+        return fields
+    patch = details.get("patch")
+    if isinstance(patch, str) and patch:
+        fields["diff"] = patch[:MAX_DIFF_CHARS]
+    if "exit_code" in details:
+        fields["exit_code"] = details["exit_code"]
+    if tool_name == ASK_USER_QUESTION and "questions" in details:
+        fields["question"] = details
+    return fields
+
+
 class SseRenderer:
     """Stateful projector for one run's event stream (turn count, tool labels)."""
 
@@ -102,15 +120,7 @@ class SseRenderer:
             }
             # The UI shows edits as a diff and bash runs by exit code; both
             # live in the tool's details rather than its model-facing text.
-            details = event.result.details
-            if isinstance(details, dict):
-                patch = details.get("patch")
-                if isinstance(patch, str) and patch:
-                    payload["diff"] = patch[:MAX_DIFF_CHARS]
-                if "exit_code" in details:
-                    payload["exit_code"] = details["exit_code"]
-                if event.tool_name == ASK_USER_QUESTION and "questions" in details:
-                    payload["question"] = details
+            payload.update(tool_outcome(event.tool_name, event.result.details))
             return payload
         return None
 

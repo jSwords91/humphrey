@@ -16,6 +16,7 @@ from brain.messages import (
     AssistantMessage,
     ImageContent,
     TextContent,
+    ToolCall,
     ToolResultMessage,
     UserMessage,
 )
@@ -57,16 +58,72 @@ def test_an_image_that_cannot_be_decoded_leaves_a_note_not_a_gap() -> None:
     assert [(r.content, r.images) for r in rows] == [(UNSHOWABLE_IMAGE_NOTE, ())]
 
 
-def test_tool_results_failed_turns_and_empty_turns_are_not_shown() -> None:
+def test_failed_turns_and_empty_turns_are_not_shown() -> None:
     rows = history_rows(
         [
             UserMessage(content="   "),
             AssistantMessage(content="", model="mock"),
             AssistantMessage(content="partial", model="mock", stop_reason="error"),
-            ToolResultMessage(tool_call_id="c1", tool_name="bash", content="output"),
         ]
     )
     assert rows == []
+
+
+def test_a_tool_run_comes_back_as_the_card_the_live_stream_showed() -> None:
+    rows = history_rows(
+        [
+            UserMessage(content="list files", timestamp_ms=1),
+            AssistantMessage(
+                content=[ToolCall(id="c1", name="bash", arguments={"command": "ls", "description": "Listing files"})],
+                model="mock",
+                timestamp_ms=2,
+            ),
+            ToolResultMessage(
+                tool_call_id="c1",
+                tool_name="bash",
+                content="a.txt",
+                details={"exit_code": 0},
+                timestamp_ms=3,
+            ),
+            AssistantMessage(content="One file.", model="mock", timestamp_ms=4),
+        ]
+    )
+    assert [(r.role, r.content, r.ts) for r in rows] == [
+        ("user", "list files", 1),
+        ("tool", "a.txt", 3),
+        ("assistant", "One file.", 4),
+    ]
+    assert rows[1].tool == {
+        "name": "bash",
+        "label": "Listing files",
+        "call_id": "c1",
+        "args": {"command": "ls", "description": "Listing files"},
+        "is_error": False,
+        "step": 1,
+        "exit_code": 0,
+    }
+
+
+def test_an_edit_keeps_its_diff_and_a_failure_stays_a_failure() -> None:
+    rows = history_rows(
+        [
+            ToolResultMessage(
+                tool_call_id="c1", tool_name="edit", content="ok", details={"patch": "@@ -1 +1 @@\n-a\n+b"}
+            ),
+            ToolResultMessage(tool_call_id="c2", tool_name="read", content="nope", is_error=True),
+        ]
+    )
+    assert rows[0].tool["diff"] == "@@ -1 +1 @@\n-a\n+b"
+    assert rows[1].tool["is_error"] is True
+    assert rows[1].tool["args"] == {}  # no matching call (an old or repaired transcript)
+
+
+def test_a_long_tool_result_is_shortened_for_the_card() -> None:
+    from app.rendering.history import MAX_HISTORY_RESULT_CHARS, SHORTENED_RESULT_NOTE
+
+    long = "x" * (MAX_HISTORY_RESULT_CHARS + 10)
+    rows = history_rows([ToolResultMessage(tool_call_id="c1", tool_name="read", content=long)])
+    assert rows[0].content == "x" * MAX_HISTORY_RESULT_CHARS + SHORTENED_RESULT_NOTE
 
 
 def test_a_summary_is_shown_where_it_happened() -> None:
@@ -94,3 +151,19 @@ def test_an_inline_summary_from_an_old_session_is_shown_and_ordered() -> None:
     assert rows[0].role == "context_summary"
     assert rows[0].content == "## Goal\n- do the thing"
     assert [r.ts for r in rows] == sorted(r.ts for r in rows)
+
+
+def test_each_tool_run_says_which_model_step_made_it() -> None:
+    def call(i: str) -> ToolCall:
+        return ToolCall(id=i, name="read", arguments={"path": f"{i}.txt"})
+
+    rows = history_rows(
+        [
+            AssistantMessage(content=[call("a"), call("b")], model="mock"),  # one step, two calls
+            ToolResultMessage(tool_call_id="a", tool_name="read", content="A"),
+            ToolResultMessage(tool_call_id="b", tool_name="read", content="B"),
+            AssistantMessage(content=[call("c")], model="mock"),  # the next step
+            ToolResultMessage(tool_call_id="c", tool_name="read", content="C"),
+        ]
+    )
+    assert [r.tool["step"] for r in rows] == [0, 0, 3]

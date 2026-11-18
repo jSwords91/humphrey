@@ -6,9 +6,9 @@ structured summarization prompts are all taken essentially verbatim from
 tau (adapted only for our message/tool shapes). What's NOT ported, because
 our architecture doesn't have the concept:
 
-- Provider-catalog-derived context window sizes (tau's ``RuntimeModelCatalog``)
-  — we use one configured constant (``settings.context_window_tokens``)
-    instead of per-model lookups across many vendors.
+- Tau's provider catalog of context window sizes (``RuntimeModelCatalog``).
+  The caller passes the window: the model's own where its source lists one
+  (a ChatGPT plan does), else a default (see app/model_access.py).
 - Dynamically-added tools mid-session (tau's ``added_tool_names`` tracking on
   a tool result) — our TOOLS list is static for the lifetime of a harness,
   so the "trailing added tool tokens" component tau computes doesn't apply.
@@ -435,13 +435,12 @@ async def compact_if_needed(
     context_window_tokens: int,
 ) -> ContextCompaction | None:
     """Summarise the older part of ``context`` if it's grown past the
-    auto-compaction threshold for the configured context window, or return
+    auto-compaction threshold for the model's context window, or return
     None when it fits or there is no safe place to split it.
 
     Called once, before a turn starts (app/main.py) - see this module's
     docstring for what tau does that this deliberately doesn't (mid-loop
-    overflow recovery, dynamic-tool-token tracking, per-model catalog
-    lookups).
+    overflow recovery, dynamic-tool-token tracking).
     """
     threshold = auto_compaction_threshold_for_context_window(context_window_tokens)
     if threshold is None:

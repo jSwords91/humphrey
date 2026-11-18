@@ -24,6 +24,17 @@ def _on_unless_off(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() not in {"0", "false", "no", "off"}
 
 
+# The context window assumed for a model whose own isn't known: every model
+# an API key or Azure offers, since neither lists windows. A ChatGPT plan's
+# model list gives each model's window (see app/model_access.py).
+DEFAULT_CONTEXT_WINDOW_TOKENS = 128_000
+
+
+def _optional_int(name: str) -> int | None:
+    raw = os.environ.get(name, "").strip()
+    return int(raw) if raw else None
+
+
 StorageBackend = Literal["auto", "azure", "local", "memory"]
 _STORAGE_BACKENDS = {"auto", "azure", "local", "memory"}
 
@@ -52,7 +63,9 @@ class Settings:
     local_storage_dir: str
     workspace_dir: str
     credentials_dir: str
-    context_window_tokens: int
+    # MODEL_CONTEXT_WINDOW_TOKENS, if set: the window for every model,
+    # in place of each model's own. Unset, see context_window_for().
+    context_window_tokens: int | None
     ask_user_question: bool
 
     @property
@@ -114,10 +127,10 @@ def get_settings() -> Settings:
         # Docker mounts, so a sign-in survives a restart.
         credentials_dir=os.environ.get("HUMPHREY_CREDENTIALS_DIR", "").strip()
         or str(Path(__file__).resolve().parent.parent / "data" / "credentials"),
-        # One configured constant rather than tau's per-model catalog lookup
-        # (RuntimeModelCatalog) - deliberately simpler, see context_window.py's
-        # module docstring. 128k covers every model this app currently uses.
-        context_window_tokens=int(os.environ.get("MODEL_CONTEXT_WINDOW_TOKENS", "128000")),
+        # Set, this replaces every model's own window (to compact sooner,
+        # say). Unset, a model uses the window its source lists, or
+        # DEFAULT_CONTEXT_WINDOW_TOKENS where it lists none.
+        context_window_tokens=_optional_int("MODEL_CONTEXT_WINDOW_TOKENS"),
         # The ask_user_question tool (on by default). Off removes the tool, so
         # the model is never offered it and the prompt doesn't mention it.
         ask_user_question=_on_unless_off("HUMPHREY_ASK_USER_QUESTION"),

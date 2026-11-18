@@ -37,6 +37,12 @@ from brain.tools import AgentTool, ToolCancellationToken, ToolResult, ToolUpdate
 
 DEFAULT_MAX_OUTPUT_BYTES = 50 * 1024
 DEFAULT_MAX_OUTPUT_LINES = 2_000
+# bash stops a command after this long unless the model asks for more, so a
+# command that never exits (a server, a prompt for input) can't hold the turn
+# until someone presses Stop. Tau has no default; Humphrey's user may not be
+# watching. The cap keeps a huge requested timeout from bringing that back.
+DEFAULT_BASH_TIMEOUT_SECONDS = 120.0
+MAX_BASH_TIMEOUT_SECONDS = 600.0
 UTF8_BOM = "﻿"
 
 
@@ -814,6 +820,7 @@ def create_bash_tool(
             return ToolResult.error(str(exc))
         if signal is not None and signal.is_cancelled():
             return ToolResult.error("Command cancelled")
+        timeout = min(timeout or DEFAULT_BASH_TIMEOUT_SECONDS, MAX_BASH_TIMEOUT_SECONDS)
 
         shell_command = _prefixed_shell_command(command, prefix)
         start = monotonic()
@@ -867,7 +874,12 @@ def create_bash_tool(
         exit_code = process.returncode
         status: str | None = None
         if timed_out:
-            status = f"Command timed out after {timeout:g} seconds" if timeout else "Command timed out"
+            status = f"Command timed out after {timeout:g} seconds"
+            if timeout < MAX_BASH_TIMEOUT_SECONDS:
+                status += (
+                    f". If it needs longer, run it again with a larger timeout "
+                    f"(up to {MAX_BASH_TIMEOUT_SECONDS:g})"
+                )
         elif cancelled:
             status = "Command cancelled"
         elif exit_code not in (0, None):
@@ -885,6 +897,7 @@ def create_bash_tool(
                 "command": command,
                 "exit_code": exit_code,
                 "timed_out": timed_out,
+                "timeout_seconds": timeout,
                 "cancelled": cancelled,
                 "duration_seconds": round(monotonic() - start, 3),
                 "truncation": truncation.to_json(),
@@ -901,7 +914,8 @@ def create_bash_tool(
             "Execute a bash command. Returns combined stdout/stderr. Output is truncated to "
             f"last {DEFAULT_MAX_OUTPUT_LINES} lines or {DEFAULT_MAX_OUTPUT_BYTES // 1024}KB "
             "(whichever is hit first); full output is saved to a temp file if truncated. "
-            "Optionally provide a timeout in seconds."
+            f"Commands are stopped after {DEFAULT_BASH_TIMEOUT_SECONDS:g} seconds unless you "
+            f"pass a longer timeout (up to {MAX_BASH_TIMEOUT_SECONDS:g})."
         ),
         parameters={
             "command": {"type": "string", "description": "Bash command to execute"},
@@ -912,7 +926,13 @@ def create_bash_tool(
                     "e.g. 'Running tests'"
                 ),
             },
-            "timeout": {"type": "number", "description": "Timeout in seconds (optional, no default)"},
+            "timeout": {
+                "type": "number",
+                "description": (
+                    f"Timeout in seconds (optional, default {DEFAULT_BASH_TIMEOUT_SECONDS:g}, "
+                    f"max {MAX_BASH_TIMEOUT_SECONDS:g})"
+                ),
+            },
         },
         required=("command", "description"),
         execute_fn=execute,

@@ -16,7 +16,7 @@ import time
 from dataclasses import dataclass, field
 
 from app.auth.chatgpt import get_chatgpt_auth
-from app.settings import active_provider_kind, get_settings
+from app.settings import DEFAULT_CONTEXT_WINDOW_TOKENS, active_provider_kind, get_settings
 from brain.provider import ModelProvider
 from providers import get_provider
 from providers.openai_models import ModelInfo, list_models
@@ -52,6 +52,9 @@ class ModelOptions:
     efforts: dict[str, list[str]] = field(default_factory=dict)
     # REASONING_EFFORT: the one default, used unless someone picks another.
     default_effort: str | None = None
+    # The context window each model is compacted against (see
+    # context_window_for); every model in ``models`` has one.
+    context_windows: dict[str, int] = field(default_factory=dict)
 
 
 def current_source() -> str:
@@ -100,6 +103,7 @@ async def model_options() -> ModelOptions:
             {m.slug: m.display_name for m in models},
             _only_when_reasoning(efforts),
             settings.reasoning_effort,
+            _context_windows(slugs, {m.slug: m.context_window for m in models}),
         )
     if source == "openai":
         models = list(settings.selectable_models)
@@ -108,14 +112,33 @@ async def model_options() -> ModelOptions:
         }
         return ModelOptions(
             source, True, models[0], models, {}, _only_when_reasoning(efforts),
-            settings.reasoning_effort,
+            settings.reasoning_effort, _context_windows(models),
         )
     fixed = {
         "mock": "mock",
         "azure_openai": settings.azure_openai_deployment,
         "unconfigured": "unset",
     }[source]
-    return ModelOptions(source, False, fixed, [fixed], {})
+    return ModelOptions(source, False, fixed, [fixed], {}, context_windows=_context_windows([fixed]))
+
+
+def _context_windows(
+    models: list[str], listed: dict[str, int | None] | None = None
+) -> dict[str, int]:
+    """Each model's window: MODEL_CONTEXT_WINDOW_TOKENS if set, else the
+    one its source lists, else DEFAULT_CONTEXT_WINDOW_TOKENS."""
+    override = get_settings().context_window_tokens
+    listed = listed or {}
+    return {
+        model: override or listed.get(model) or DEFAULT_CONTEXT_WINDOW_TOKENS
+        for model in models
+    }
+
+
+async def context_window_for(model: str) -> int:
+    """The context window to compact ``model``'s chats against."""
+    options = await model_options()
+    return options.context_windows.get(model) or _context_windows([model])[model]
 
 
 def _only_when_reasoning(efforts: dict[str, list[str]]) -> dict[str, list[str]]:

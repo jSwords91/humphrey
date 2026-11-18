@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from app.tools import TOOLS
+from app.tools import tau_ported
 from app.tools.tau_ported import (
     create_bash_tool,
     create_coding_tools,
@@ -243,6 +244,32 @@ async def test_bash_timeout_is_not_treated_as_an_error(tmp_path: Path) -> None:
     assert result.details["timed_out"] is True
     assert result.is_error is False
     assert "timed out" in result.text.lower()
+
+
+@pytest.mark.asyncio
+async def test_bash_stops_a_command_with_no_timeout_after_the_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(tau_ported, "DEFAULT_BASH_TIMEOUT_SECONDS", 0.2)
+    bash = create_bash_tool(cwd=tmp_path)
+    result = await bash.execute("c1", {"command": "sleep 5", "description": "hangs"})
+    assert result.details["timed_out"] is True
+    assert result.details["timeout_seconds"] == 0.2
+    assert "larger timeout" in result.text
+
+
+@pytest.mark.asyncio
+async def test_bash_caps_a_requested_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(tau_ported, "MAX_BASH_TIMEOUT_SECONDS", 0.2)
+    bash = create_bash_tool(cwd=tmp_path)
+    result = await bash.execute(
+        "c1", {"command": "sleep 5", "description": "slow", "timeout": 10_000}
+    )
+    assert result.details["timed_out"] is True
+    assert result.details["timeout_seconds"] == 0.2
+    assert "larger timeout" not in result.text  # already at the cap
 
 
 @pytest.mark.asyncio

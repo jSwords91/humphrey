@@ -1,6 +1,6 @@
 """The transcript as the web UI's history view shows it: one row per visible
-user or assistant turn, a row for each context summary, and a row for each
-ask_user_question card with its answer.
+user or assistant turn, a row for each context summary, a row for each tool
+run, and a row for each ask_user_question card with its answer.
 
 A projection for one frontend, so it lives here beside the SSE renderer and
 not in brain/: brain/ keeps the full typed transcript and knows nothing
@@ -17,15 +17,27 @@ from typing import Any, Literal
 
 from app.context_window import COMPACTION_SUMMARY_PREFIX
 from app.image_processing import image_bytes, image_digest
+from app.rendering.sse import tool_outcome
+from app.tools import tool_label
 from app.tools.ask_user_question import NAME as ASK_USER_QUESTION
-from brain.messages import AgentMessage, AssistantMessage, ToolResultMessage, UserMessage
+from brain.messages import (
+    AgentMessage,
+    AssistantMessage,
+    ToolCall,
+    ToolResultMessage,
+    UserMessage,
+)
 
 UNSHOWABLE_IMAGE_NOTE = "(An image was attached here, but it can't be shown.)"
+# A reopened chat carries each tool's result for its card. The model saw up
+# to 50 KB of each; the card shows the start, so reopening stays quick.
+MAX_HISTORY_RESULT_CHARS = 20_000
+SHORTENED_RESULT_NOTE = "\n\n[Shortened here. The model saw the full result.]"
 
 
 @dataclass(slots=True)
 class HistoryRow:
-    role: Literal["user", "assistant", "context_summary", "question"]
+    role: Literal["user", "assistant", "context_summary", "question", "tool"]
     content: str
     # Milliseconds. Rows are in time order, which the UI relies on to put
     # artefacts back where they happened.
@@ -34,6 +46,10 @@ class HistoryRow:
     images: tuple[str, ...] = ()
     # A question card's questions, status and answers (the tool's details).
     question: dict[str, Any] | None = None
+    # A tool run's card: the same fields the live stream's tool_start and
+    # tool_end carry (name, label, call id, args, error flag, diff, exit
+    # code), and the model step that made the call. Its result is ``content``.
+    tool: dict[str, Any] | None = None
 
 
 def history_rows(
@@ -42,7 +58,12 @@ def history_rows(
     """Project ``messages`` for the history view, with each ``(created_ms,
     text)`` context summary shown where it happened."""
     rows: list[HistoryRow] = []
-    for message in messages:
+    # Each call, and the model step that made it: the live view groups a
+    # step's tool runs together, and a reopened chat does the same.
+    calls: dict[str, tuple[ToolCall, int]] = {}
+    for step, message in enumerate(messages):
+        if isinstance(message, AssistantMessage):
+            calls.update((call.id, (call, step)) for call in message.tool_calls)
         if isinstance(message, UserMessage):
             row = _user_row(message)
             if row is not None:
@@ -55,6 +76,8 @@ def history_rows(
             row = _question_row(message)
             if row is not None:
                 rows.append(row)
+        elif isinstance(message, ToolResultMessage):
+            rows.append(_tool_row(message, calls.get(message.tool_call_id)))
 
     for created_ms, text in summaries:
         at = next((i for i, r in enumerate(rows) if r.ts >= created_ms), len(rows))
@@ -91,6 +114,24 @@ def _question_row(message: ToolResultMessage) -> HistoryRow | None:
     if not isinstance(details, dict) or not isinstance(details.get("questions"), list):
         return None  # a call refused before it reached the user
     return HistoryRow("question", message.text, message.timestamp_ms, question=details)
+
+
+def _tool_row(message: ToolResultMessage, made_by: tuple[ToolCall, int] | None) -> HistoryRow:
+    call, step = made_by if made_by is not None else (None, None)
+    args = dict(call.arguments) if call is not None else {}
+    result = message.text
+    if len(result) > MAX_HISTORY_RESULT_CHARS:
+        result = result[:MAX_HISTORY_RESULT_CHARS] + SHORTENED_RESULT_NOTE
+    tool = {
+        "name": message.tool_name,
+        "label": tool_label(message.tool_name, args),
+        "call_id": message.tool_call_id,
+        "args": args,
+        "is_error": message.is_error,
+        "step": step,
+        **tool_outcome(message.tool_name, message.details),
+    }
+    return HistoryRow("tool", result, message.timestamp_ms, tool=tool)
 
 
 def _order_inline_summaries(rows: list[HistoryRow]) -> None:

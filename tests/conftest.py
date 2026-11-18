@@ -24,6 +24,7 @@ os.environ.pop("AZURE_OPENAI_ENDPOINT", None)
 os.environ.pop("AZURE_OPENAI_DEPLOYMENT", None)
 os.environ.pop("OPENAI_API_KEY", None)
 os.environ.pop("OPENAI_MODELS", None)
+os.environ.pop("MODEL_CONTEXT_WINDOW_TOKENS", None)
 
 
 @pytest.fixture(autouse=True)

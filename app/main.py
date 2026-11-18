@@ -28,7 +28,13 @@ from app.artifacts import (
     scan_workspace,
 )
 from app.context_window import compact_if_needed
-from app.model_access import UnknownModel, build_provider, current_source, model_options
+from app.model_access import (
+    UnknownModel,
+    build_provider,
+    context_window_for,
+    current_source,
+    model_options,
+)
 from app.image_processing import (
     ImageProcessingFailure,
     ProcessedImage,
@@ -45,7 +51,7 @@ from app.sessions import (
     get_session_store,
     new_session_id,
 )
-from app.settings import get_settings
+from app.settings import DEFAULT_CONTEXT_WINDOW_TOKENS, get_settings
 from app.tools import TOOLS, WORKSPACE_DIR, tools_for_run
 from app.ui_bridge import WebUiBridge
 from brain.events import ToolExecutionEndEvent
@@ -120,12 +126,14 @@ class SessionMessageOut(BaseModel):
     # context_summary: a synthetic auto-compaction summary (app/context_window.py),
     # not something the user typed - rendered distinctly by the frontend.
     # question: an ask_user_question card, with its answer in `question`.
-    role: Literal["user", "assistant", "context_summary", "question"]
+    # tool: a tool run, its result in `content` and its card in `tool`.
+    role: Literal["user", "assistant", "context_summary", "question", "tool"]
     content: str
     ts: int | None = None
     # URLs of the images attached to a user turn (GET /api/sessions/{id}/images/...).
     images: list[str] = Field(default_factory=list)
     question: dict[str, Any] | None = None
+    tool: dict[str, Any] | None = None
 
 
 class SessionOut(BaseModel):
@@ -158,6 +166,9 @@ class ModelsOut(BaseModel):
     # Reasoning efforts per model, and the default (REASONING_EFFORT).
     efforts: dict[str, list[str]] = Field(default_factory=dict)
     default_effort: str | None = None
+    # The context window each model is compacted against, so the UI's
+    # context bar measures against the same number.
+    context_windows: dict[str, int] = Field(default_factory=dict)
 
 
 class AuthStatusOut(BaseModel):
@@ -234,9 +245,9 @@ def healthz() -> dict[str, object]:
         "storage": settings.storage_backend,
         "provider": provider,
         "deployment": deployment,
-        # The budget auto-compaction works to (MODEL_CONTEXT_WINDOW_TOKENS),
-        # so the UI's context bar measures against the same number.
-        "context_window_tokens": settings.context_window_tokens,
+        # The budget for a model with no window of its own; /api/models
+        # gives each offered model's.
+        "context_window_tokens": settings.context_window_tokens or DEFAULT_CONTEXT_WINDOW_TOKENS,
     }
 
 
@@ -254,6 +265,7 @@ async def list_models() -> ModelsOut:
         labels=options.labels,
         efforts=options.efforts,
         default_effort=options.default_effort,
+        context_windows=options.context_windows,
     )
 
 
@@ -385,6 +397,7 @@ async def get_session(session_id: str) -> SessionOut:
                 ts=row.ts,
                 images=[f"/api/sessions/{session.id}/images/{digest}" for digest in row.images],
                 question=row.question,
+                tool=row.tool,
             )
             for row in session.history_rows()
         ],
@@ -611,7 +624,7 @@ async def agent(body: AgentRequest, request: Request) -> StreamingResponse:
         provider=housekeeping,
         system=system_prompt(),
         tools=TOOLS,
-        context_window_tokens=settings.context_window_tokens,
+        context_window_tokens=await context_window_for(provider.deployment_name),
     )
     if compaction is not None:
         session.record_compaction(compaction.summary, kept_from=compaction.kept_from)
