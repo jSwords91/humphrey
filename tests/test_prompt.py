@@ -136,25 +136,3 @@ async def test_a_turn_sends_the_workspaces_agents_md_to_the_model(monkeypatch) -
     finally:
         path.unlink()
     assert systems and "Sign off every reply with a cat emoji." in systems[0]
-
-
-def test_a_new_workspace_gets_the_starter_agents_md_once(tmp_path) -> None:
-    from app.agent import system_prompt
-    from app.prompt import AGENTS_STARTER, prepare_workspace
-
-    workspace = tmp_path / "workspace"
-    prepare_workspace(workspace)
-    path = workspace / "AGENTS.md"
-    assert path.read_text(encoding="utf-8") == AGENTS_STARTER
-    assert "# Humphrey Instructions" in system_prompt(workspace)
-
-    path.unlink()  # deleted by the person: it stays deleted
-    prepare_workspace(workspace)
-    assert not path.exists()
-
-
-def test_an_existing_workspace_is_left_alone(tmp_path) -> None:
-    from app.prompt import prepare_workspace
-
-    prepare_workspace(tmp_path)  # already there, as for anyone upgrading
-    assert not (tmp_path / "AGENTS.md").exists()

@@ -181,10 +181,6 @@ should always know. It's sent to the model with each message, so an edit
 applies from your next one. Keep it short, since every message carries it.
 Humphrey can read and edit it too, like any other workspace file.
 
-A new workspace starts with a short one to edit. A workspace from before
-this has none: create `AGENTS.md` yourself, or ask Humphrey to. Delete the
-file to go without; it isn't recreated.
-
 ## Artefacts
 
 Any file the agent creates or changes in the workspace (via `write`, `edit`,

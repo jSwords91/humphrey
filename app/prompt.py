@@ -21,26 +21,6 @@ logger = logging.getLogger(__name__)
 # Standing instructions the person keeps in the workspace (see README).
 AGENTS_FILE_NAME = "AGENTS.md"
 
-# Written once, when Humphrey creates the workspace, for the person to edit.
-# Shaped like tau's own AGENTS.md: a title, what this is, then short sections
-# of instructions to the agent. All of it reaches the model, so it holds
-# defaults that are fine as they are, not placeholders.
-AGENTS_STARTER = """\
-# Humphrey Instructions
-
-This workspace is where Humphrey reads, writes and runs things for me.
-These instructions apply to every chat. Keep them short.
-
-## Working Style
-
-- Lead with the answer, then the detail.
-- Ask before deleting or overwriting a file you didn't create in this chat.
-
-## Files
-
-- Give files clear names that say what they are.
-"""
-
 PREAMBLE = (
     "You are Humphrey, a helpful assistant.\n\n"
     "Be practical: concise, accurate, and tool-first when facts matter.\n"
@@ -118,12 +98,3 @@ def workspace_instructions(workspace: Path) -> str:
         logger.warning("couldn't read %s, so it was left out of the prompt: %s", path, exc)
         return ""
     return format_project_context(path, content) if content else ""
-
-
-def prepare_workspace(workspace: Path) -> None:
-    """Create the workspace, with a starter AGENTS.md the first time only,
-    so deleting the file later keeps it deleted."""
-    if workspace.exists():
-        return
-    workspace.mkdir(parents=True)
-    (workspace / AGENTS_FILE_NAME).write_text(AGENTS_STARTER, encoding="utf-8")

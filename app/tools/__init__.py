@@ -13,7 +13,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from app.prompt import prepare_workspace
 from app.settings import get_settings
 from app.skills import SKILLS_DIR
 from app.tools.ask_user_question import create_ask_user_question_tool
@@ -24,7 +23,7 @@ from brain.tools import AgentTool
 __all__ = ["TOOLS", "WORKSPACE_DIR", "tool_label", "tools_for_run"]
 
 WORKSPACE_DIR = Path(get_settings().workspace_dir).resolve()
-prepare_workspace(WORKSPACE_DIR)
+WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
 
 # The file tools stay inside the workspace; read may also open the skills,
 # which the prompt lists by absolute path.
