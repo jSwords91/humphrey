@@ -35,7 +35,8 @@ from app.image_processing import (
     detect_supported_image_mime_type,
     process_image,
 )
-from app import projects, runs
+from app import projects, runs, tasks
+from app.task_notice import parse as _notice
 from app.projects import ProjectError, ProjectExists
 from app.runs import Run
 from app.turns import TurnRefused, start_turn
@@ -121,20 +122,24 @@ class SessionMessageOut(BaseModel):
     # not something the user typed - rendered distinctly by the frontend.
     # question: an ask_user_question card, with its answer in `question`.
     # tool: a tool run, its result in `content` and its card in `tool`.
-    role: Literal["user", "assistant", "context_summary", "question", "tool"]
+    role: Literal["user", "assistant", "context_summary", "question", "tool", "task"]
     content: str
     ts: int | None = None
     # URLs of the images attached to a user turn (GET /api/sessions/{id}/images/...).
     images: list[str] = Field(default_factory=list)
     question: dict[str, Any] | None = None
+    # task: a background task's result card, its result in `content`.
+    task: dict[str, Any] | None = None
     tool: dict[str, Any] | None = None
 
 
 class RunOut(BaseModel):
     """A turn still running in this chat: follow it at
-    /api/sessions/{id}/stream. ``prompt`` is what was typed to start it."""
+    /api/sessions/{id}/stream. ``prompt`` is what was typed to start it,
+    or ``task`` the background task whose result started it."""
 
     prompt: str
+    task: dict[str, Any] | None = None
 
 
 class SessionOut(BaseModel):
@@ -157,6 +162,9 @@ class SessionSummaryOut(BaseModel):
     updated_at: str
     title: str | None
     message_count: int
+    # The chat that started this one as a background task: the rail shows
+    # it under that chat.
+    parent_id: str | None = None
 
 
 class ActivityOut(BaseModel):
@@ -164,7 +172,8 @@ class ActivityOut(BaseModel):
 
     session_id: str
     project: str | None
-    state: Literal["working", "needs_you"]
+    # queued: a background task waiting for a free slot (app/tasks.py).
+    state: Literal["working", "needs_you", "queued"]
 
 
 class ModelsOut(BaseModel):
@@ -417,8 +426,9 @@ async def list_sessions(project: str | None = None) -> list[SessionSummaryOut]:
             SessionSummaryOut(
                 id=run.session_id,
                 updated_at=datetime.fromtimestamp(run.started_ms / 1000, timezone.utc).isoformat(),
-                title=run.prompt,
+                title=run.title or run.prompt,
                 message_count=0,
+                parent_id=run.parent_id,
             )
             for run in starting
         ),
@@ -428,6 +438,7 @@ async def list_sessions(project: str | None = None) -> list[SessionSummaryOut]:
                 updated_at=r.updated_at,
                 title=r.title,
                 message_count=r.message_count,
+                parent_id=r.parent_id,
             )
             for r in rows
         ),
@@ -440,9 +451,12 @@ def list_activity() -> list[ActivityOut]:
     mark chats it isn't following: one in another project waiting on a
     question, or one another tab started."""
     return [
-        ActivityOut(session_id=run.session_id, project=run.project, state=state)
-        for run in runs.current()
-        if (state := run.state) is not None
+        *(
+            ActivityOut(session_id=run.session_id, project=run.project, state=state)
+            for run in runs.current()
+            if (state := run.state) is not None
+        ),
+        *(ActivityOut(session_id=t.id, project=t.project, state="queued") for t in tasks.queued()),
     ]
 
 
@@ -490,6 +504,7 @@ async def get_session(session_id: str) -> SessionOut:
                 ts=row.ts,
                 images=[f"/api/sessions/{session.id}/images/{digest}" for digest in row.images],
                 question=row.question,
+                task=row.task,
                 tool=row.tool,
             )
             for row in rows
@@ -501,7 +516,7 @@ async def get_session(session_id: str) -> SessionOut:
         last_usage=last_usage,
         usage_totals=_usage_totals(messages),
         artifacts=artifacts,
-        run=RunOut(prompt=run.prompt) if run is not None else None,
+        run=RunOut(prompt=run.prompt, task=_notice(run.prompt)) if run is not None else None,
     )
 
 

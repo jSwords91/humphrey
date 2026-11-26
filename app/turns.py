@@ -23,11 +23,18 @@ from app.model_access import UnknownModel, build_provider, context_window_for
 from app.projects import ProjectError
 from app.rendering.sse import SseRenderer, encode_sse
 from app.runs import FrameLog, Run
-from app.sessions import Session, generate_session_title, get_session_store, new_session_id
+from app.sessions import (
+    Session,
+    generate_session_title,
+    get_session_store,
+    new_session_id,
+)
+from app.tasks import ChatTasks
 from app.tools import TOOLS, WORKSPACE_DIR, tools_for_run
+from app.tools.tasks import IN_A_TASK
 from app.ui_bridge import WebUiBridge
 from brain.events import ToolExecutionEndEvent, ToolExecutionStartEvent
-from brain.messages import ImageContent, TextContent, UserMessage
+from brain.messages import AgentMessage, ImageContent, TextContent, UserMessage
 
 logger = logging.getLogger(__name__)
 
@@ -49,13 +56,19 @@ async def start_turn(
     model: str | None = None,
     effort: str | None = None,
     project: str | None = None,
+    parent_id: str | None = None,
+    seed: Sequence[AgentMessage] = (),
+    title: str | None = None,
 ) -> Run:
     """Start a turn in ``session_id`` (a new chat if None or unknown) and
     return its run, already working in a task of its own.
 
     ``content`` is what the model is sent; ``shown`` is what the person
     typed, which names a new chat and is shown for a run in progress.
-    ``project`` is for a new chat; an existing one keeps its own.
+    ``project`` is for a new chat; an existing one keeps its own. A
+    background task's chat is new too, with the chat that started it
+    (``parent_id``), the conversation a fork starts from (``seed``) and
+    its ``title`` (app/tasks.py).
     """
     store = get_session_store()
 
@@ -71,7 +84,13 @@ async def start_turn(
     existing = await store.get(session_id) if session_id else None
     if session_id is None:
         session_id = new_session_id()
-    session = existing or Session(id=session_id)
+    session = existing or Session(
+        id=session_id,
+        parent_id=parent_id,
+        title=title,
+        messages=list(seed),
+        inherited=len(seed),
+    )
 
     try:
         provider = await build_provider(model, effort)
@@ -110,13 +129,21 @@ async def start_turn(
     prompt_message = UserMessage(content=content if isinstance(content, str) else list(content))
     log = FrameLog()
     bridge = WebUiBridge(lambda payload: log.publish(encode_sse({**payload, "session_id": session_id})))
+    # A chat can start background tasks; a task's own chat can't.
+    tasks = (
+        ChatTasks(session_id, project=project, model=model, effort=effort)
+        if session.parent_id is None
+        else IN_A_TASK
+    )
     harness = build_harness(
         session_id=session_id,
         provider=provider,
         messages=history,
-        tools=tools_for_run(bridge, workdir),
+        tools=tools_for_run(bridge, workdir, tasks),
         workspace=workdir,
     )
+    if isinstance(tasks, ChatTasks):
+        tasks.context = lambda: harness.messages  # what a fork starts from
     # Started here rather than in the task, so the run counts as running
     # from the moment it can be found.
     events = harness.prompt_message(prompt_message)
@@ -129,6 +156,8 @@ async def start_turn(
         started_ms=prompt_message.timestamp_ms,
         new_chat=existing is None,
         project=project,
+        parent_id=session.parent_id,
+        title=session.title,
     )
     tracker = ArtifactTracker(workdir, projects.scan_exclusions(project))
 
@@ -169,6 +198,16 @@ async def start_turn(
             # turn added, so the stored transcript stays complete.
             session.messages.extend(harness.messages[len(history) :])
             await finish_turn(session, store, housekeeping, shown, on_saved=run.mark_saved)
+            # A follow-up that arrived as the turn ended (a task's result, or
+            # one the person queued) would otherwise be lost: it starts the
+            # next turn instead.
+            leftover = harness.clear_queues()
+            if leftover.count and not run.stopped:
+                text = "\n\n".join(m.text for m in (*leftover.steering, *leftover.follow_up))
+                try:
+                    await start_turn(session_id, text, shown=text, model=model, effort=effort)
+                except TurnRefused as exc:
+                    logger.warning("a follow-up for %s was lost: %s", session_id, exc)
 
     runs.start(run, run_turn())
     return run

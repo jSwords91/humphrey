@@ -75,6 +75,8 @@ class Run:
         started_ms: int,
         new_chat: bool,
         project: str | None,
+        parent_id: str | None = None,
+        title: str | None = None,
     ) -> None:
         self.session_id = session_id
         self.harness = harness
@@ -89,8 +91,14 @@ class Run:
         # then the run is what lists and opens it.
         self.new_chat = new_chat
         self.project = project
+        # The chat that started this one as a background task (app/tasks.py).
+        self.parent_id = parent_id
+        # A new chat's name before its first turn is saved, if it has one
+        # already (a task's); the rail falls back to the prompt.
+        self.title = title
         self.stopped = False
         self._saved = asyncio.Event()
+        self._done = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
 
     @property
@@ -111,6 +119,10 @@ class Run:
 
     async def wait_saved(self) -> None:
         await self._saved.wait()
+
+    async def wait_done(self) -> None:
+        """Until the run's work is all done: saved, and a new chat named."""
+        await self._done.wait()
 
     def stop(self) -> None:
         """End the run early: the model call, any tool, and any question."""
@@ -133,6 +145,7 @@ def start(run: Run, work: Coroutine[Any, Any, None]) -> None:
         finally:
             run.mark_saved()  # even if the work failed: never block the next turn
             run.log.finish()
+            run._done.set()
             if _runs.get(run.session_id) is run:
                 del _runs[run.session_id]
 

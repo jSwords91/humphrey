@@ -1,6 +1,7 @@
 """The transcript as the web UI's history view shows it: one row per visible
 user or assistant turn, a row for each context summary, a row for each tool
-run, and a row for each ask_user_question card with its answer.
+run, a row for each ask_user_question card with its answer, and a row for
+each background task's result (app/task_notice.py).
 
 A projection for one frontend, so it lives here beside the SSE renderer and
 not in brain/: brain/ keeps the full typed transcript and knows nothing
@@ -18,6 +19,7 @@ from typing import Any, Literal
 from app.context_window import COMPACTION_SUMMARY_PREFIX
 from app.image_processing import image_bytes, image_digest
 from app.rendering.sse import tool_outcome
+from app.task_notice import parse as parse_notice
 from app.tools import tool_label
 from app.tools.ask_user_question import NAME as ASK_USER_QUESTION
 from brain.messages import (
@@ -37,7 +39,7 @@ SHORTENED_RESULT_NOTE = "\n\n[Shortened here. The model saw the full result.]"
 
 @dataclass(slots=True)
 class HistoryRow:
-    role: Literal["user", "assistant", "context_summary", "question", "tool"]
+    role: Literal["user", "assistant", "context_summary", "question", "tool", "task"]
     content: str
     # Milliseconds. Rows are in time order, which the UI relies on to put
     # artefacts back where they happened.
@@ -50,6 +52,9 @@ class HistoryRow:
     # tool_end carry (name, label, call id, args, error flag, diff, exit
     # code), and the model step that made the call. Its result is ``content``.
     tool: dict[str, Any] | None = None
+    # A background task's result, as its card shows it: id, title, status,
+    # and whether the result was too long to include. Its result is ``content``.
+    task: dict[str, Any] | None = None
 
 
 def history_rows(
@@ -88,6 +93,9 @@ def history_rows(
 
 def _user_row(message: UserMessage) -> HistoryRow | None:
     text = message.text.strip()
+    notice = parse_notice(text)
+    if notice is not None:
+        return HistoryRow("task", notice["result"], message.timestamp_ms, task=dict(notice))
     if text.startswith(COMPACTION_SUMMARY_PREFIX):
         # A summary stored inline, as sessions compacted before schema 4 did.
         return HistoryRow(
