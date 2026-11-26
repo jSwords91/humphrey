@@ -210,6 +210,42 @@ async def test_the_next_turn_waits_for_the_last_one_to_be_saved(client: AsyncCli
 
 
 @pytest.mark.asyncio
+async def test_reopening_while_the_turn_saves_counts_its_usage_once(client: AsyncClient) -> None:
+    """The stored session may already hold the turn while it's being saved,
+    and the replay adds the turn's usage, so the stored totals leave it out."""
+    from app.sessions import get_session_store
+
+    session_id = uuid.uuid4().hex
+    await client.post("/api/agent", json={"message": {"content": "hello"}, "session_id": session_id})
+    await _ended(session_id)
+    before = (await client.get(f"/api/sessions/{session_id}")).json()
+    assert before["usage_totals"]["output"] > 0
+
+    store = get_session_store()
+    real_save = store.save
+    release = asyncio.Event()
+
+    async def slow_save(session):  # type: ignore[no-untyped-def]
+        await release.wait()
+        await real_save(session)
+
+    store.save = slow_save  # type: ignore[method-assign]
+    second = _start(client, session_id, "hello again")
+    for _ in range(500):
+        run = runs.get(session_id)
+        if run is not None and not run.harness.is_running:
+            break  # the turn is done and being saved: the memory store already holds it
+        await asyncio.sleep(0.01)
+
+    during = (await client.get(f"/api/sessions/{session_id}")).json()
+    assert during["run"] is not None
+    assert during["usage_totals"] == before["usage_totals"]
+    assert during["last_usage"] == before["last_usage"]
+    release.set()
+    await second
+
+
+@pytest.mark.asyncio
 async def test_a_late_follower_gets_every_frame_then_the_live_ones() -> None:
     log = FrameLog()
     log.publish("one")

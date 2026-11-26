@@ -415,16 +415,19 @@ async def get_session(session_id: str) -> SessionOut:
         raise HTTPException(status_code=404, detail="Session not found.")
     rows = session.history_rows()
     artifacts = session.artifacts
+    messages = session.messages
     if run is not None:
         rows = [row for row in rows if row.ts < run.started_ms]
         artifacts = [a for a in artifacts if a.get("created_ms", 0) < run.started_ms]
+        # Its usage too: the replay counts each of its model calls again.
+        messages = [m for m in messages if m.timestamp_ms < run.started_ms]
 
     # Usage accumulates per turn (each call resends the whole transcript), so
     # the last assistant message's usage is the closest available proxy for
     # "how much context this conversation currently occupies" — used by the
     # frontend to seed its context-budget display when a past chat is reopened.
     last_usage: dict[str, int] | None = None
-    for message in reversed(session.messages):
+    for message in reversed(messages):
         if isinstance(message, AssistantMessage) and message.usage:
             last_usage = dict(message.usage)
             break
@@ -446,7 +449,7 @@ async def get_session(session_id: str) -> SessionOut:
         updated_at=session.updated_at,
         title=session.title,
         last_usage=last_usage,
-        usage_totals=_usage_totals(session.messages),
+        usage_totals=_usage_totals(messages),
         artifacts=artifacts,
         run=RunOut(prompt=run.prompt) if run is not None else None,
     )
