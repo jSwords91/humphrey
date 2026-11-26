@@ -184,6 +184,12 @@ works in its folder. Every folder under `projects/` is a project, so one
 you make on disk shows up too, and an empty project's Files list gives its
 full path so you can put your own files there.
 
+The rail marks chats with a turn under way, in any project: a working chat
+carries the travelling band, and one waiting on your answer says "needs
+you". A coral count on the switcher says how many chats in other projects
+are waiting on you, and the collapsed rail shows the same for every chat
+but the one you have open.
+
 Chats you started before projects, and chats started without one, work in
 `workspace/` itself, the default project, which leaves `projects/` out of
 its file list. Humphrey never deletes a project's folder. A chat whose

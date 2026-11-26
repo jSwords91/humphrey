@@ -646,6 +646,88 @@ button:active:not(:disabled):not(.latest-btn):not(.btn-send) {
   font-size: 0.75rem;
 }
 
+/* Chats with a turn under way (/api/activity): a working chat carries the
+   travelling band, as tool cards do; one waiting on an answer says so in
+   the Needs-you colour. The coral count says how many wait elsewhere. */
+
+.session-item[data-state="working"],
+.session-item[data-state="needs_you"] {
+  position: relative;
+  overflow: hidden;
+}
+
+.session-item[data-state="working"]::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: var(--hb-band);
+  background-size: 28px 100%;
+  animation: hb-band 1.2s linear infinite;
+}
+
+.session-item[data-state="working"] .session-meta,
+.project-item-state[data-state="working"] {
+  color: var(--hb-working-text);
+}
+
+.session-item[data-state="needs_you"] .session-meta,
+.project-item-state[data-state="needs_you"] {
+  color: var(--hb-attention-text);
+}
+
+.session-item[data-state="working"] .session-meta::before,
+.session-item[data-state="needs_you"] .session-meta::before,
+.project-item-state:not(:empty)::before,
+.needs-badge::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  vertical-align: 0.1em;
+}
+
+.project-item-state {
+  display: block;
+  font-family: var(--font-sans);
+  font-size: 0.6875rem;
+}
+
+.project-item-state:empty {
+  display: none;
+}
+
+.needs-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: var(--radius-pill);
+  background: var(--color-attention-dim);
+  color: var(--hb-attention-text);
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  line-height: 1.4;
+}
+
+.needs-badge::before {
+  margin-right: 5px;
+}
+
+.needs-badge[hidden] {
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .session-item[data-state="working"]::after {
+    animation: none;
+  }
+}
+
 /* An empty project's Files list: where to put your own files. */
 .files-empty {
   display: flex;

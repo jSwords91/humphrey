@@ -1380,12 +1380,17 @@
         sub.textContent = "Files outside any project";
         label.append(sub);
       }
+      // Under the name, so a narrow rail never cuts the name short.
+      const state = document.createElement("span");
+      state.className = "project-item-state";
+      label.append(state);
       btn.append(label);
       btn.addEventListener("click", () => switchProject(name));
       li.append(btn);
       projectList.append(li);
       if (focusedProject === btn.dataset.project) btn.focus();
     }
+    paintActivity();
   }
 
   function openProjectMenu() {
@@ -1515,6 +1520,88 @@
     if (switcher && event.target instanceof Node && !switcher.contains(event.target)) {
       closeProjectMenu({ focus: false });
     }
+  });
+
+  // Activity (/api/activity): which chats have a turn under way, in every
+  // project. The chat this tab follows shows its own run; the rest come
+  // from here, so the rail can mark a chat working or waiting on you
+  // anywhere, including ones another tab started.
+  const ACTIVITY_MS = 4000;
+  const projectNeeds = document.getElementById("project-needs");
+  const railNeeds = document.getElementById("rail-needs");
+  /** @type {{ session_id: string, project: string | null, state: "working" | "needs_you" }[]} */
+  let activity = [];
+
+  async function loadActivity() {
+    let next;
+    try {
+      const res = await fetch("/api/activity");
+      if (!res.ok) return;
+      next = await res.json();
+    } catch {
+      return;
+    }
+    const ended = activity.some(
+      (a) => a.project === currentProject && !next.some((n) => n.session_id === a.session_id),
+    );
+    const listed = (/** @type {string} */ id) =>
+      Boolean(sessionList?.querySelector(`[data-session-id="${CSS.escape(id)}"]`));
+    const unlisted = next.some((/** @type {any} */ a) => a.project === currentProject && !listed(a.session_id));
+    activity = next;
+    paintActivity();
+    // A chat that ended has a new title and time; a new one in its first
+    // turn isn't in the list yet.
+    if (ended || unlisted) void loadSessions();
+  }
+
+  /** @param {string | null} project */
+  function projectState(project) {
+    const mine = activity.filter((a) => a.project === project);
+    if (mine.some((a) => a.state === "needs_you")) return "needs_you";
+    return mine.length ? "working" : null;
+  }
+
+  /** @param {HTMLElement | null} badge @param {number} count @param {string} what */
+  function setNeedsBadge(badge, count, what) {
+    if (!badge) return;
+    badge.hidden = count === 0;
+    badge.textContent = String(count);
+    badge.title = `${count} ${count === 1 ? "chat needs" : "chats need"} you ${what}`;
+  }
+
+  function paintActivity() {
+    for (const row of document.querySelectorAll("#session-list .session-item[data-session-id]")) {
+      const el = /** @type {HTMLElement} */ (row);
+      const state = activity.find((a) => a.session_id === el.dataset.sessionId)?.state;
+      const meta = /** @type {HTMLElement | null} */ (el.querySelector(".session-meta"));
+      if (state) {
+        el.dataset.state = state;
+      } else {
+        delete el.dataset.state;
+      }
+      if (meta) {
+        meta.textContent = state === "needs_you" ? "needs you" : state === "working" ? "working" : meta.dataset.time || "";
+      }
+    }
+    for (const item of document.querySelectorAll("#project-list .project-item")) {
+      const el = /** @type {HTMLElement} */ (item);
+      const slot = /** @type {HTMLElement | null} */ (el.querySelector(".project-item-state"));
+      if (!slot) continue;
+      const state = projectState(el.dataset.project || null);
+      slot.dataset.state = state || "";
+      slot.textContent = state === "needs_you" ? "needs you" : state === "working" ? "working" : "";
+    }
+    const waiting = activity.filter((a) => a.state === "needs_you");
+    setNeedsBadge(projectNeeds, waiting.filter((a) => a.project !== currentProject).length, "in other projects");
+    // The collapsed rail hides every row, so it counts all but the open chat.
+    setNeedsBadge(railNeeds, waiting.filter((a) => a.session_id !== sessionId).length, "elsewhere");
+  }
+
+  setInterval(() => {
+    if (!document.hidden) void loadActivity();
+  }, ACTIVITY_MS);
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) void loadActivity();
   });
 
   /** Mermaid theme from the live CSS tokens, so diagrams follow light/dark. */
@@ -3337,6 +3424,8 @@
         const meta = document.createElement("span");
         meta.className = "session-meta";
         meta.textContent = relativeTime(row.updated_at) || "Saved";
+        meta.dataset.time = meta.textContent;
+        btn.dataset.sessionId = row.id;
         btn.append(title, meta);
         btn.addEventListener("click", () => {
           void openSession(row.id);
@@ -3344,6 +3433,7 @@
         li.append(btn);
         sessionList.append(li);
       }
+      paintActivity();
     } catch {
       /* ignore */
     }
@@ -3643,6 +3733,7 @@
 
     if (type === "ui_request" && event.kind === "question") {
       showAsk(event, state);
+      void loadActivity();
       return;
     }
 
@@ -3653,6 +3744,7 @@
       }
       setRunning(true);
       ensureThought(state);
+      void loadActivity();
       return;
     }
 
@@ -4051,6 +4143,7 @@
         settleThought(state);
         setRunning(false);
         void loadSessions();
+        void loadActivity();
         question.focus();
         void drainQueue();
       }
@@ -4205,6 +4298,7 @@
   setRunning(false);
   renderProject();
   void loadProjects();
+  void loadActivity();
   void probeHealth();
   void loadSessions();
   void restoreSession().then(() => {

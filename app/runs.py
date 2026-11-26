@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Coroutine
-from typing import Any
+from typing import Any, Literal
 
 from app.ui_bridge import WebUiBridge
 from brain.harness import AgentHarness
@@ -92,6 +92,14 @@ class Run:
         self.stopped = False
         self._saved = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
+
+    @property
+    def state(self) -> Literal["working", "needs_you"] | None:
+        """What the person should know: it's working, or it's waiting on
+        their answer. None once the model is done (saving, naming)."""
+        if self.bridge.waiting:
+            return "needs_you"
+        return "working" if self.harness.is_running else None
 
     @property
     def saved(self) -> bool:

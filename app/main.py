@@ -169,6 +169,14 @@ class SessionSummaryOut(BaseModel):
     message_count: int
 
 
+class ActivityOut(BaseModel):
+    """A chat with a turn under way: working, or waiting on the person."""
+
+    session_id: str
+    project: str | None
+    state: Literal["working", "needs_you"]
+
+
 class ModelsOut(BaseModel):
     provider: str  # the source: mock, chatgpt, openai, azure_openai or unconfigured
     selectable: bool
@@ -422,6 +430,18 @@ async def list_sessions(project: str | None = None) -> list[SessionSummaryOut]:
             )
             for r in rows
         ),
+    ]
+
+
+@app.get("/api/activity", response_model=list[ActivityOut])
+def list_activity() -> list[ActivityOut]:
+    """Every chat with a turn under way, in any project, so the rail can
+    mark chats it isn't following: one in another project waiting on a
+    question, or one another tab started."""
+    return [
+        ActivityOut(session_id=run.session_id, project=run.project, state=state)
+        for run in runs.current()
+        if (state := run.state) is not None
     ]
 
 
