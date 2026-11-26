@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import binascii
 import html
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
@@ -42,7 +42,8 @@ from app.image_processing import (
     process_image,
 )
 from app.rendering.sse import SseRenderer, encode_sse
-from app.runs import get_active, get_bridge, register_active, unregister_active
+from app import runs
+from app.runs import FrameLog, Run
 from app.skills import SkillError, expand_skill_command, load_skills
 from app.sessions import (
     SAFE_SESSION_ID,
@@ -55,7 +56,6 @@ from app.settings import DEFAULT_CONTEXT_WINDOW_TOKENS, get_settings
 from app.tools import TOOLS, WORKSPACE_DIR, tools_for_run
 from app.ui_bridge import WebUiBridge
 from brain.events import ToolExecutionEndEvent
-from brain.cancel import SimpleCancellationToken
 from brain.messages import AgentMessage, AssistantMessage, ImageContent, TextContent, UserMessage
 
 logger = logging.getLogger(__name__)
@@ -136,6 +136,13 @@ class SessionMessageOut(BaseModel):
     tool: dict[str, Any] | None = None
 
 
+class RunOut(BaseModel):
+    """A turn still running in this chat: follow it at
+    /api/sessions/{id}/stream. ``prompt`` is what was typed to start it."""
+
+    prompt: str
+
+
 class SessionOut(BaseModel):
     id: str
     messages: list[SessionMessageOut]
@@ -147,6 +154,7 @@ class SessionOut(BaseModel):
     # cached and reasoning parts of each (see providers' usage records).
     usage_totals: dict[str, int] = Field(default_factory=dict)
     artifacts: list[dict[str, Any]] = Field(default_factory=list)
+    run: RunOut | None = None
 
 
 class SessionSummaryOut(BaseModel):
@@ -359,14 +367,34 @@ async def chatgpt_sign_out() -> AuthStatusOut:
 @app.get("/api/sessions", response_model=list[SessionSummaryOut])
 async def list_sessions() -> list[SessionSummaryOut]:
     rows = await get_session_store().list_recent(limit=20)
+    listed = {r.id for r in rows}
+    # New chats still in their first turn: not stored yet, but they can be
+    # left and come back to, so they're listed, newest first, named by
+    # their prompt as an unnamed chat would be.
+    starting = sorted(
+        (run for run in runs.current() if run.new_chat and not run.saved and run.session_id not in listed),
+        key=lambda run: run.started_ms,
+        reverse=True,
+    )
     return [
-        SessionSummaryOut(
-            id=r.id,
-            updated_at=r.updated_at,
-            title=r.title,
-            message_count=r.message_count,
-        )
-        for r in rows
+        *(
+            SessionSummaryOut(
+                id=run.session_id,
+                updated_at=datetime.fromtimestamp(run.started_ms / 1000, timezone.utc).isoformat(),
+                title=run.prompt,
+                message_count=0,
+            )
+            for run in starting
+        ),
+        *(
+            SessionSummaryOut(
+                id=r.id,
+                updated_at=r.updated_at,
+                title=r.title,
+                message_count=r.message_count,
+            )
+            for r in rows
+        ),
     ]
 
 
@@ -374,16 +402,32 @@ async def list_sessions() -> list[SessionSummaryOut]:
 async def get_session(session_id: str) -> SessionOut:
     if not SAFE_SESSION_ID.match(session_id):
         raise HTTPException(status_code=422, detail="Invalid session id.")
+    # Looked up before the read: a run unsaved now may save while the
+    # session is read, so the read may or may not hold this turn. Either
+    # way the turn is left out below, and following the run replays it.
+    run = runs.get(session_id)
+    if run is not None and run.saved:
+        run = None
     session = await get_session_store().get(session_id)
+    if session is None and run is not None:
+        session = Session(id=session_id)  # a new chat: stored once its first turn is
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found.")
+    rows = session.history_rows()
+    artifacts = session.artifacts
+    messages = session.messages
+    if run is not None:
+        rows = [row for row in rows if row.ts < run.started_ms]
+        artifacts = [a for a in artifacts if a.get("created_ms", 0) < run.started_ms]
+        # Its usage too: the replay counts each of its model calls again.
+        messages = [m for m in messages if m.timestamp_ms < run.started_ms]
 
     # Usage accumulates per turn (each call resends the whole transcript), so
     # the last assistant message's usage is the closest available proxy for
     # "how much context this conversation currently occupies" — used by the
     # frontend to seed its context-budget display when a past chat is reopened.
     last_usage: dict[str, int] | None = None
-    for message in reversed(session.messages):
+    for message in reversed(messages):
         if isinstance(message, AssistantMessage) and message.usage:
             last_usage = dict(message.usage)
             break
@@ -399,14 +443,15 @@ async def get_session(session_id: str) -> SessionOut:
                 question=row.question,
                 tool=row.tool,
             )
-            for row in session.history_rows()
+            for row in rows
         ],
         created_at=session.created_at,
         updated_at=session.updated_at,
         title=session.title,
         last_usage=last_usage,
-        usage_totals=_usage_totals(session.messages),
-        artifacts=session.artifacts,
+        usage_totals=_usage_totals(messages),
+        artifacts=artifacts,
+        run=RunOut(prompt=run.prompt) if run is not None else None,
     )
 
 
@@ -437,29 +482,26 @@ async def get_session_image(session_id: str, digest: str) -> Response:
     )
 
 
-# Turn endings still running after their request was cancelled. asyncio
-# keeps only weak references to tasks, so without this one could be
-# garbage-collected part-way through saving.
-_finishing: set[asyncio.Task[None]] = set()
-# Turns still running, held for the same reason.
-_running: set[asyncio.Task[None]] = set()
-# Seconds of silence before the stream sends a keepalive, e.g. while a
+# Seconds of silence before a stream sends a keepalive, e.g. while a
 # question card waits for an answer.
 KEEPALIVE_SECONDS = 15.0
 
 
 async def finish_turn(
-    session: Session, store: Any, title_provider: Any, first_message: str
+    session: Session,
+    store: Any,
+    title_provider: Any,
+    first_message: str,
+    *,
+    on_saved: Callable[[], None] = lambda: None,
 ) -> None:
     """Save the turn, then name a new chat and save again.
 
-    As one task shielded from cancellation: when the browser goes away (a
-    reload, a closed tab), Starlette cancels this request, and the
-    cancellation lands on whatever is being awaited. Naming used to come
-    first, so a reload during the title call lost the whole new chat. Now
-    the transcript is saved first, and the whole sequence runs to the end
-    wherever the cancellation lands, title included (if the title model
-    fails, generate_session_title falls back to the start of the message).
+    The transcript is saved first, so the chat is never lost to a slow or
+    failing title call (if the title model fails, generate_session_title
+    falls back to the start of the message). ``on_saved`` runs as soon as
+    the turn is stored, which lets the chat's next turn begin while this
+    one is still being named.
     """
 
     async def save() -> None:
@@ -468,18 +510,13 @@ async def finish_turn(
         except Exception:  # noqa: BLE001
             logger.exception("failed to persist session %s", session.id)
 
-    async def save_then_name() -> None:
-        await save()
-        if session.title is None:
-            title = await generate_session_title(title_provider, first_message)
-            if title:
-                session.title = title
-                await save()
-
-    task = asyncio.create_task(save_then_name())
-    _finishing.add(task)
-    task.add_done_callback(_finishing.discard)
-    await asyncio.shield(task)
+    await save()
+    on_saved()
+    if session.title is None:
+        title = await generate_session_title(title_provider, first_message)
+        if title:
+            session.title = title
+            await save()
 
 
 USAGE_KEYS = ("input", "output", "cached_input", "reasoning_output")
@@ -497,20 +534,19 @@ def _usage_totals(messages: list[AgentMessage]) -> dict[str, int]:
     return totals
 
 
-def _require_active(session_id: str):
+def _require_running(session_id: str) -> Run:
     if not SAFE_SESSION_ID.match(session_id):
         raise HTTPException(status_code=422, detail="Invalid session id.")
-    harness = get_active(session_id)
-    if harness is None or not harness.is_running:
+    run = runs.get(session_id)
+    if run is None or not run.harness.is_running:
         raise HTTPException(status_code=409, detail="No active run for this session.")
-    return harness
+    return run
 
 
 @app.post("/api/sessions/{session_id}/steer", response_model=QueueOut)
 async def steer_session(session_id: str, body: QueueRequest) -> QueueOut:
     """Inject a mid-run steering message (drained between tool turns)."""
-    harness = _require_active(session_id)
-    queued = harness.steer(body.content.strip())
+    queued = _require_running(session_id).harness.steer(body.content.strip())
     return QueueOut(
         steering=len(queued.steering),
         follow_up=len(queued.follow_up),
@@ -521,13 +557,36 @@ async def steer_session(session_id: str, body: QueueRequest) -> QueueOut:
 @app.post("/api/sessions/{session_id}/follow-up", response_model=QueueOut)
 async def follow_up_session(session_id: str, body: QueueRequest) -> QueueOut:
     """Queue a follow-up for after the current run would otherwise settle."""
-    harness = _require_active(session_id)
-    queued = harness.follow_up(body.content.strip())
+    queued = _require_running(session_id).harness.follow_up(body.content.strip())
     return QueueOut(
         steering=len(queued.steering),
         follow_up=len(queued.follow_up),
         count=queued.count,
     )
+
+
+@app.post(
+    "/api/sessions/{session_id}/stop",
+    status_code=204,
+    dependencies=[Depends(_json_only)],
+)
+async def stop_session(session_id: str) -> Response:
+    """Stop the chat's run. The only way to: leaving the page doesn't."""
+    _require_running(session_id).stop()
+    return Response(status_code=204)
+
+
+@app.get("/api/sessions/{session_id}/stream")
+async def follow_session(session_id: str) -> StreamingResponse:
+    """Follow the chat's run from its first frame, e.g. after a reload or
+    coming back from another chat. 404 once the run has ended: its turn is
+    then in the stored session."""
+    if not SAFE_SESSION_ID.match(session_id):
+        raise HTTPException(status_code=422, detail="Invalid session id.")
+    run = runs.get(session_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="No run to follow for this session.")
+    return _stream(run)
 
 
 @app.post(
@@ -539,8 +598,8 @@ async def answer_ui_request(session_id: str, request_id: str, body: UiAnswerRequ
     """Answer a question the run is waiting on (app/ui_bridge.py)."""
     if not SAFE_SESSION_ID.match(session_id):
         raise HTTPException(status_code=422, detail="Invalid session id.")
-    bridge = get_bridge(session_id)
-    if bridge is None or not bridge.resolve(request_id, body.model_dump()):
+    run = runs.get(session_id)
+    if run is None or not run.bridge.resolve(request_id, body.model_dump()):
         raise HTTPException(status_code=404, detail="Nothing is waiting for this answer.")
     return Response(status_code=204)
 
@@ -584,18 +643,27 @@ def _process_uploaded_images(attachments: list[ImageAttachment]) -> tuple[list[I
 
 
 @app.post("/api/agent")
-async def agent(body: AgentRequest, request: Request) -> StreamingResponse:
+async def agent(body: AgentRequest) -> StreamingResponse:
     store = get_session_store()
     session_id = body.session_id
     if session_id is not None and not SAFE_SESSION_ID.match(session_id):
         raise HTTPException(status_code=422, detail="Invalid session id.")
 
-    if session_id:
-        existing = await store.get(session_id)
-        session = existing or Session(id=session_id)
-    else:
+    # One turn at a time per chat. A turn that has finished but isn't
+    # saved yet is waited for, or this one would start from the history
+    # before it and then save over it.
+    previous = runs.get(session_id) if session_id else None
+    if previous is not None and previous.harness.is_running:
+        raise HTTPException(
+            status_code=409, detail="This chat is still working: steer it or queue a follow-up."
+        )
+    if previous is not None:
+        await previous.wait_saved()
+
+    existing = await store.get(session_id) if session_id else None
+    if session_id is None:
         session_id = new_session_id()
-        session = Session(id=session_id)
+    session = existing or Session(id=session_id)
 
     latest_user = body.message.content
     settings = get_settings()
@@ -640,100 +708,78 @@ async def agent(body: AgentRequest, request: Request) -> StreamingResponse:
     else:
         prompt_message = UserMessage(content=prompt_text)
 
-    # Every SSE frame goes through `frames`: the turn's events, and the
-    # question cards its bridge sends while a tool waits for an answer.
-    # None marks the end, sent once the turn is saved.
-    frames: asyncio.Queue[str | None] = asyncio.Queue()
-    bridge = WebUiBridge(lambda payload: frames.put_nowait(encode_sse({**payload, "session_id": session_id})))
+    log = FrameLog()
+    bridge = WebUiBridge(lambda payload: log.publish(encode_sse({**payload, "session_id": session_id})))
     harness = build_harness(
         session_id=session_id, provider=provider, messages=history, tools=tools_for_run(bridge)
     )
-    stopped = SimpleCancellationToken()
-    register_active(session_id, harness, bridge)
-
+    # Started here rather than in the task, so the run counts as running
+    # from the moment it can be found.
+    events = harness.prompt_message(prompt_message)
+    run = Run(
+        session_id,
+        harness=harness,
+        bridge=bridge,
+        log=log,
+        prompt=latest_user,
+        started_ms=prompt_message.timestamp_ms,
+        new_chat=existing is None,
+    )
     tracker = ArtifactTracker(WORKSPACE_DIR)
 
     async def run_turn() -> None:
-        """Run the turn and save it, in a task of its own. The stream only
-        relays its frames, so a browser that goes away (a reload, a closed
-        tab) stops the run but can't cut the save short, and a tool can
-        wait on the bridge while its question card goes out."""
+        """Run the turn and save it. Whoever follows the log sees its
+        frames; nobody needs to, and a tool can wait on the bridge while
+        its question card goes out."""
         renderer = SseRenderer(session_id=session_id)
-        stream: AsyncIterator[Any] | None = None
         try:
-            stream = harness.prompt_message(prompt_message)
-            async for event in stream:
+            async for event in events:
                 wire = renderer.to_sse(event)
                 if wire is not None:
-                    frames.put_nowait(wire)
+                    log.publish(wire)
                 if isinstance(event, ToolExecutionEndEvent):
                     for artifact in tracker.changes():
                         artifact["version"] = 1 + sum(
                             1 for a in session.artifacts if a.get("path") == artifact["path"]
                         )
                         session.artifacts.append(artifact)
-                        frames.put_nowait(encode_sse({"type": "artifact", **artifact}))
+                        log.publish(encode_sse({"type": "artifact", **artifact}))
         except Exception:  # noqa: BLE001
             logger.exception("turn failed for session %s", session_id)
         finally:
-            if stream is not None:
-                try:
-                    await stream.aclose()  # type: ignore[attr-defined]
-                except Exception:  # noqa: BLE001
-                    logger.debug("agent stream aclose failed", exc_info=True)
+            try:
+                await events.aclose()  # type: ignore[attr-defined]
+            except Exception:  # noqa: BLE001
+                logger.debug("agent stream aclose failed", exc_info=True)
             bridge.close()
-            if stopped.is_cancelled():
+            if run.stopped:
                 harness.append_interrupted_tool_results()
-            unregister_active(session_id, harness)
             # The harness started from model_context(); append only what this
             # turn added, so the stored transcript stays complete.
             session.messages.extend(harness.messages[len(history) :])
-            try:
-                await finish_turn(session, store, housekeeping, latest_user)
-            finally:
-                frames.put_nowait(None)
+            await finish_turn(session, store, housekeeping, latest_user, on_saved=run.mark_saved)
 
-    def stop() -> None:
-        """Stop the run. Synchronous on purpose: it runs while the request
-        is being cancelled, where any await would be cancelled too."""
-        stopped.cancel()
-        harness.cancel()
-        bridge.close()
+    runs.start(run, run_turn())
+    return _stream(run)
 
-    async def event_stream() -> AsyncIterator[str]:
-        task = asyncio.create_task(run_turn())
-        _running.add(task)
-        task.add_done_callback(_running.discard)
-        finished = False
-        try:
-            while True:
-                try:
-                    frame = await asyncio.wait_for(frames.get(), KEEPALIVE_SECONDS)
-                except asyncio.TimeoutError:
-                    # Quiet while a question waits: keep the connection open,
-                    # and notice if the browser has gone.
-                    if await request.is_disconnected():
-                        break
-                    yield ": keepalive\n\n"
-                    continue
-                if frame is None:
-                    finished = True
-                    break
-                yield frame
-                if await request.is_disconnected():
-                    break
-        finally:
-            if not finished:
-                stop()
+
+def _stream(run: Run) -> StreamingResponse:
+    """A run's frames as server-sent events, from the first. Leaving
+    early just stops the following; the run carries on."""
+
+    async def frames() -> AsyncIterator[str]:
+        async for frame in run.log.follow(idle=KEEPALIVE_SECONDS):
+            # Quiet while a question waits: keep the connection open.
+            yield ": keepalive\n\n" if frame is None else frame
 
     return StreamingResponse(
-        event_stream(),
+        frames(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
-            "X-Session-Id": session_id,
+            "X-Session-Id": run.session_id,
         },
     )
 

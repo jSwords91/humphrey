@@ -139,7 +139,9 @@ class SseRenderer:
         if isinstance(message, ToolResultMessage):
             return None  # superseded by tool_execution_end
         if isinstance(message, AssistantMessage):
-            if message.stop_reason in {"error", "aborted"}:
+            if message.stop_reason == "aborted":
+                return {"type": "stopped"}  # someone pressed Stop: not an error
+            if message.stop_reason == "error":
                 return {
                     "type": "error",
                     "detail": message.error_message or "Unknown agent error",

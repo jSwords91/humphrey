@@ -65,7 +65,6 @@
   let pinFrame = 0;
   /** @type {AbortController | null} */
   let activeRun = null;
-  let suppressAbortMessage = false;
   let toolSeq = 0;
   let toolsUsed = 0;
   let charsIn = 0;
@@ -2982,11 +2981,7 @@
 
   function resetChat() {
     dropAsk();
-    if (activeRun) {
-      suppressAbortMessage = true;
-      activeRun.abort();
-      activeRun = null;
-    }
+    leaveRun();
     messages = [];
     sessionId = null;
     localStorage.removeItem(SESSION_KEY);
@@ -3072,14 +3067,11 @@
 
   /**
    * @param {string} id
-   * @param {{ silent?: boolean }} [opts]
+   * @param {{ silent?: boolean, reopened?: boolean }} [opts]
    */
   async function openSession(id, opts = {}) {
     dropAsk();
-    if (activeRun) {
-      activeRun.abort();
-      activeRun = null;
-    }
+    leaveRun();
     try {
       const res = await fetch(`/api/sessions/${encodeURIComponent(id)}`);
       if (!res.ok) {
@@ -3176,6 +3168,13 @@
         const next = placed.find((row) => row.ts > (art.created_ms ?? 0));
         placeArtifact(art, { animate: false, before: next ? next.el : null });
       }
+      // A turn still running here: the history stops before it, so show
+      // what was typed to start it, and below, follow the run itself.
+      const running = data.run && typeof data.run.prompt === "string" ? data.run : null;
+      if (running) {
+        messages.push({ role: "user", content: running.prompt });
+        appendMessage("user", running.prompt, { animate: false });
+      }
       setToolStat("—"); // drawing past tool runs isn't activity
       setActive(messages.length > 0);
       setRunning(false);
@@ -3186,6 +3185,19 @@
       pinToBottom();
       void loadSessions();
       question.focus();
+      if (running) {
+        void showRun(
+          (signal) =>
+            fetch(`/api/sessions/${encodeURIComponent(id)}/stream`, {
+              headers: { Accept: "text/event-stream" },
+              signal,
+            }),
+          // It ended between the two requests, so its turn is stored now.
+          async () => {
+            if (!opts.reopened) void openSession(id, { silent: true, reopened: true });
+          },
+        );
+      }
     } catch {
       if (sessionId === id) {
         sessionId = null;
@@ -3234,7 +3246,8 @@
       if (statProvider) {
         statProvider.textContent = provider;
       }
-      setStatus(stage.dataset.running === "1" ? "working" : "ready");
+      // A page opened onto a running turn may already be showing it.
+      setStatus(pendingAsk ? "waiting" : stage.dataset.running === "1" ? "working" : "ready");
     } catch {
       setStatus("ready");
       if (statProvider) {
@@ -3283,6 +3296,37 @@
         }
       }
     }
+  }
+
+  /**
+   * The reply being written is done: drop its caret and draw it as Markdown,
+   * or remove it if nothing was written. At its end, or at a stop or error.
+   * @param {any} state
+   */
+  function settleReply(state) {
+    if (state.assistantEl) {
+      state.assistantEl.classList.remove("is-streaming");
+      const body = state.assistantEl.querySelector(".msg-body");
+      if (body instanceof HTMLElement) {
+        if (state.assistantText) {
+          setMarkdown(body, state.assistantText);
+        } else {
+          clearStreamCaret(body);
+        }
+      }
+      if (state.assistantText) {
+        state.assistantEl.append(buildMsgActions(state.assistantText));
+      }
+    }
+    if (state.assistantText) {
+      state.finalAssistantText = state.assistantText;
+      charsOut += state.assistantText.length;
+      updateStats();
+    } else if (state.assistantEl) {
+      state.assistantEl.remove();
+    }
+    state.assistantEl = null;
+    state.assistantText = "";
   }
 
   /**
@@ -3398,29 +3442,7 @@
         contextTokens = (Number(u.input) || 0) + (Number(u.output) || 0);
         updateStats();
       }
-      if (state.assistantEl) {
-        state.assistantEl.classList.remove("is-streaming");
-        const body = state.assistantEl.querySelector(".msg-body");
-        if (body instanceof HTMLElement) {
-          if (state.assistantText) {
-            setMarkdown(body, state.assistantText);
-          } else {
-            clearStreamCaret(body);
-          }
-        }
-        if (state.assistantText) {
-          state.assistantEl.append(buildMsgActions(state.assistantText));
-        }
-      }
-      if (state.assistantText) {
-        state.finalAssistantText = state.assistantText;
-        charsOut += state.assistantText.length;
-        updateStats();
-      } else if (state.assistantEl) {
-        state.assistantEl.remove();
-      }
-      state.assistantEl = null;
-      state.assistantText = "";
+      settleReply(state);
       return;
     }
 
@@ -3511,8 +3533,17 @@
     }
 
     if (type === "error") {
+      settleReply(state);
       settleThought(state);
       showError(String(event.detail ?? "Unknown agent error"));
+      setRunning(false);
+    }
+
+    if (type === "stopped") {
+      settleReply(state); // what was written before the stop stays
+      settleThought(state);
+      appendMessage("status", "Stopped.");
+      announce("Run stopped.");
       setRunning(false);
     }
   }
@@ -3587,17 +3618,7 @@
       return;
     }
 
-    if (activeRun) {
-      if (opts.steer) {
-        suppressAbortMessage = true;
-      }
-      activeRun.abort();
-      activeRun = null;
-    }
-
-    const controller = new AbortController();
-    activeRun = controller;
-
+    leaveRun();
     const wasEmpty = messages.length === 0;
     /** @type {{ role: "user"; content: string; images?: { data: string }[] }} */
     const pushedMessage = { role: "user", content: text };
@@ -3620,6 +3641,63 @@
     hasNewBelow = false;
     updateLatestButton();
     appendMessage("user", text, { images: attachments.map((a) => a.previewUrl) });
+
+    await showRun(
+      (signal) =>
+        fetch("/api/agent", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "text/event-stream",
+          },
+          // Only the new turn: the server rebuilds everything earlier from the
+          // stored session, so `messages` here is UI state, never resent.
+          body: JSON.stringify({
+            message: {
+              content: pushedMessage.content,
+              ...(pushedMessage.images ? { images: pushedMessage.images } : {}),
+            },
+            session_id: sessionId,
+            ...(selectedModel ? { model: selectedModel } : {}),
+            ...(selectedEffort ? { reasoning_effort: selectedEffort } : {}),
+          }),
+          signal,
+        }).finally(() => {
+          // The bytes have been sent; don't keep them in the UI's message list.
+          delete pushedMessage.images;
+        }),
+      async (res) => {
+        messages.pop();
+        transcript.querySelector(".msg-user:last-of-type")?.remove();
+        if (messages.length === 0) {
+          setActive(false);
+        }
+        showError(await responseDetail(res));
+      },
+    );
+  }
+
+  /** @param {Response} res */
+  async function responseDetail(res) {
+    try {
+      const data = await res.json();
+      return typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail ?? data, null, 2);
+    } catch {
+      return `HTTP ${res.status}`;
+    }
+  }
+
+  /**
+   * Show a run as it happens, until its stream ends: a turn this tab just
+   * started, or one already running that it has come back to. The run
+   * belongs to the server, so leaving only stops the showing (leaveRun);
+   * Stop is what ends the run (stopRun).
+   * @param {(signal: AbortSignal) => Promise<Response>} open
+   * @param {(res: Response) => Promise<void>} onRefused
+   */
+  async function showRun(open, onRefused) {
+    const controller = new AbortController();
+    activeRun = controller;
 
     /** @type {{
      *   assistantEl: HTMLElement | null,
@@ -3652,27 +3730,7 @@
     ensureThought(state);
 
     try {
-      const res = await fetch("/api/agent", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "text/event-stream",
-        },
-        // Only the new turn: the server rebuilds everything earlier from the
-        // stored session, so `messages` here is UI state, never resent.
-        body: JSON.stringify({
-          message: {
-            content: pushedMessage.content,
-            ...(pushedMessage.images ? { images: pushedMessage.images } : {}),
-          },
-          session_id: sessionId,
-          ...(selectedModel ? { model: selectedModel } : {}),
-          ...(selectedEffort ? { reasoning_effort: selectedEffort } : {}),
-        }),
-        signal: controller.signal,
-      });
-      // The bytes have been sent; don't keep them in the UI's message list.
-      delete pushedMessage.images;
+      const res = await open(controller.signal);
 
       const headerSession = res.headers.get("X-Session-Id");
       if (headerSession) {
@@ -3681,40 +3739,19 @@
       }
 
       if (!res.ok) {
-        let detail = `HTTP ${res.status}`;
-        try {
-          const data = await res.json();
-          detail =
-            typeof data.detail === "string"
-              ? data.detail
-              : JSON.stringify(data.detail ?? data, null, 2);
-        } catch {
-          /* keep status */
-        }
-        messages.pop();
-        transcript.querySelector(".msg-user:last-of-type")?.remove();
-        if (messages.length === 0) {
-          setActive(false);
-        }
-        showError(detail);
+        await onRefused(res);
         return;
       }
 
       if (!res.body) {
-        showError("No response body from /api/agent");
+        showError("No response body from the run's stream");
         return;
       }
 
       await readSse(res.body, (ev) => applyEvent(ev, state), controller.signal);
     } catch (err) {
       if (err && typeof err === "object" && "name" in err && err.name === "AbortError") {
-        if (suppressAbortMessage) {
-          suppressAbortMessage = false;
-        } else {
-          appendMessage("status", "Stopped.");
-          announce("Run stopped.");
-        }
-        return;
+        return; // this tab left the run; it carries on
       }
       showError(String(err));
     } finally {
@@ -3733,11 +3770,33 @@
     }
   }
 
-  function stopRun() {
+  /** Stop showing the run here (another chat, a new one). It carries on. */
+  function leaveRun() {
     if (activeRun) {
-      suppressAbortMessage = false;
       activeRun.abort();
+      activeRun = null;
     }
+  }
+
+  /** End the run itself. Its stream says so, then ends once the turn is saved. */
+  async function stopRun() {
+    if (!activeRun || !sessionId) {
+      return;
+    }
+    try {
+      const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/stop`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      // 409: nothing left to stop, the turn is only being saved.
+      if (res.ok || res.status === 409) {
+        return;
+      }
+    } catch {
+      /* fall through */
+    }
+    showToast("Could not stop the run");
   }
 
   // Rails
@@ -3770,7 +3829,7 @@
   latestBtn?.addEventListener("click", () => jumpToLatest());
   newBtn?.addEventListener("click", () => resetChat());
   newBtnCollapsed?.addEventListener("click", () => resetChat());
-  stopBtn?.addEventListener("click", () => stopRun());
+  stopBtn?.addEventListener("click", () => void stopRun());
   followUpBtn?.addEventListener("click", () => {
     if (stage.dataset.running === "1" && sessionId) {
       void postQueue("follow-up", question.value);
@@ -3840,7 +3899,7 @@
     }
     if (stage.dataset.running === "1") {
       event.preventDefault();
-      stopRun();
+      void stopRun();
     }
   });
 

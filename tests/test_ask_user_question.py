@@ -218,12 +218,12 @@ def _events(body: str) -> list[dict[str, Any]]:
 
 
 async def _wait_for_bridge(session_id: str):
-    from app.runs import get_bridge
+    from app import runs
 
     for _ in range(500):
-        bridge = get_bridge(session_id)
-        if bridge is not None and bridge.waiting:
-            return bridge
+        run = runs.get(session_id)
+        if run is not None and run.bridge.waiting:
+            return run.bridge
         await asyncio.sleep(0.01)
     raise AssertionError("the run never asked")
 
