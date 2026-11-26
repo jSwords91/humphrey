@@ -1,9 +1,9 @@
-"""A new chat survives the browser leaving while it's being named.
+"""A turn is saved before a new chat is named.
 
-Found running Humphrey for real: reloading the page a second or two after a
-new chat's first reply lost the whole chat. The turn's end named the chat
-(a model call) before saving it, and the reload cancelled the request in
-the middle of that call, so the save never ran.
+Found running Humphrey for real: naming the chat (a model call) came
+first, so a failure or a reload during it lost the whole chat. The save
+now comes first, and the next turn may begin as soon as it's done. That a
+reload can't interrupt a turn at all is tested in test_runs.py.
 """
 
 from __future__ import annotations
@@ -34,23 +34,6 @@ def _new_chat() -> Session:
     )
 
 
-async def test_a_reload_while_naming_still_saves_the_chat_and_then_names_it() -> None:
-    store = MemorySessionStore()
-    session = _new_chat()
-    turn = asyncio.create_task(finish_turn(session, store, SlowTitles(0.2), "how many files?"))
-    await asyncio.sleep(0.05)  # saved, and now waiting on the title
-    turn.cancel()  # the browser went away
-    await asyncio.sleep(0)
-
-    saved = await store.get("newchat000000001")
-    assert saved is not None
-    assert [m.text for m in saved.messages] == ["how many files?", "Three."]
-
-    await asyncio.sleep(0.3)  # the title call carries on regardless
-    saved = await store.get("newchat000000001")
-    assert saved is not None and saved.title == "Counting Workspace Files"
-
-
 async def test_a_normal_turn_saves_and_names() -> None:
     store = MemorySessionStore()
     await finish_turn(_new_chat(), store, SlowTitles(0), "how many files?")
@@ -71,19 +54,13 @@ async def test_a_failed_title_model_still_saves_with_a_fallback_title() -> None:
     assert saved.title == "how many files"  # generate_session_title's own fallback
 
 
-async def test_leaving_during_the_first_save_still_names_the_chat() -> None:
-    """The real case: writing a session can be slow (a Windows drive under
-    WSL), and the reload landed during that save, so naming never began."""
+async def test_the_turn_counts_as_saved_before_the_chat_is_named() -> None:
+    store = MemorySessionStore()
+    saved_at: list[str | None] = []
 
-    class SlowStore(MemorySessionStore):
-        async def save(self, session: Session) -> None:
-            await asyncio.sleep(0.1)
-            await super().save(session)
+    def on_saved() -> None:
+        stored = store._sessions.get("newchat000000001")
+        saved_at.append(stored.title if stored else "not stored")
 
-    store = SlowStore()
-    turn = asyncio.create_task(finish_turn(_new_chat(), store, SlowTitles(0.05), "how many files?"))
-    await asyncio.sleep(0.02)  # mid-save
-    turn.cancel()
-    await asyncio.sleep(0.5)
-    saved = await store.get("newchat000000001")
-    assert saved is not None and saved.title == "Counting Workspace Files"
+    await finish_turn(_new_chat(), store, SlowTitles(0.05), "how many files?", on_saved=on_saved)
+    assert saved_at == [None]  # stored, not yet named
