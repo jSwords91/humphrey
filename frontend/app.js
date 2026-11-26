@@ -58,6 +58,13 @@
   let pendingAttachments = [];
   /** @type {string | null} */
   let sessionId = localStorage.getItem(SESSION_KEY);
+  const PROJECT_KEY = "humphrey.project";
+  /** The project in view: where new chats work, and whose chats and files
+   * the rail lists. Null is the default project, the workspace itself.
+   * @type {string | null} */
+  let currentProject = localStorage.getItem(PROJECT_KEY);
+  /** @type {{ root: string, projects: { name: string, folder: string }[] }} */
+  let projectsInfo = { root: "", projects: [] };
   /** @type {{ kind: "steer" | "follow-up"; text: string }[]} */
   let queue = [];
   let pinnedToBottom = true;
@@ -885,7 +892,7 @@
       if (art.kind === "html") {
         const frame = document.createElement("iframe");
         frame.className = "artifact-frame";
-        frame.title = art.path;
+        frame.title = shownPath(art);
         frame.setAttribute("sandbox", "allow-scripts allow-popups");
         frame.setAttribute("loading", "lazy");
         frame.src = fileUrl(art.path, { embed: "true", theme: currentTheme(), v: String(art.mtime ?? "") });
@@ -896,7 +903,7 @@
       if (art.kind === "image") {
         const img = document.createElement("img");
         img.className = "artifact-image";
-        img.alt = art.path;
+        img.alt = shownPath(art);
         img.loading = "lazy";
         img.src = fileUrl(art.path, { v: String(art.mtime ?? "") });
         if (!opts.full) img.addEventListener("click", () => openArtifactViewer(art));
@@ -906,7 +913,7 @@
       if (art.kind === "pdf") {
         const frame = document.createElement("iframe");
         frame.className = "artifact-frame artifact-pdf";
-        frame.title = art.path;
+        frame.title = shownPath(art);
         frame.src = fileUrl(art.path, { v: String(art.mtime ?? "") });
         body.append(frame);
         return;
@@ -1032,7 +1039,7 @@
     title.className = "artifact-title";
     const name = document.createElement("span");
     name.className = "artifact-name";
-    name.textContent = art.path;
+    name.textContent = shownPath(art);
     const meta = document.createElement("span");
     meta.className = "artifact-meta";
     meta.textContent = [ARTIFACT_LABELS[art.kind] || "File", formatBytes(art.size)].filter(Boolean).join(" · ");
@@ -1096,7 +1103,7 @@
     card.className = "artifact";
     if (opts.animate !== false) card.classList.add("msg-enter");
     card.dataset.kind = art.kind;
-    card.setAttribute("aria-label", `${ARTIFACT_LABELS[art.kind] || "File"} artefact ${art.path}`);
+    card.setAttribute("aria-label", `${ARTIFACT_LABELS[art.kind] || "File"} artefact ${shownPath(art)}`);
 
     const body = document.createElement("div");
     body.className = "artifact-body";
@@ -1203,16 +1210,15 @@
 
   async function loadFiles() {
     if (!filesList) return;
+    const project = currentProject;
     try {
-      const res = await fetch("/api/files");
+      const res = await fetch(`/api/files${projectQuery()}`);
       if (!res.ok) return;
       const files = await res.json();
+      if (project !== currentProject) return; // a switch overtook this answer
       filesList.replaceChildren();
       if (!files.length) {
-        const empty = document.createElement("li");
-        empty.className = "session-empty";
-        empty.textContent = "Files Humphrey makes appear here.";
-        filesList.append(empty);
+        filesList.append(filesEmptyState());
         return;
       }
       for (const file of files.slice(0, 50)) {
@@ -1223,9 +1229,9 @@
         btn.innerHTML = `<i class="ph ${ARTIFACT_ICONS[file.kind] || "ph-file"}" aria-hidden="true"></i>`;
         const name = document.createElement("span");
         name.className = "session-title";
-        name.textContent = file.path;
+        name.textContent = shownPath(file);
         btn.append(name);
-        btn.title = `${file.path} · ${formatBytes(file.size)}`;
+        btn.title = `${shownPath(file)} · ${formatBytes(file.size)}`;
         btn.addEventListener("click", () => openArtifactViewer(file));
         li.append(btn);
         filesList.append(li);
@@ -1234,6 +1240,282 @@
       /* the list just stays as it was */
     }
   }
+
+  /** No files yet: say where the person's own files go, ready to copy. */
+  function filesEmptyState() {
+    const li = document.createElement("li");
+    li.className = "files-empty";
+    const note = document.createElement("span");
+    note.textContent = "No files yet. Put your own files here and Humphrey can use them:";
+    li.append(note);
+    const folder = projectFolder();
+    if (folder) {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "path-chip";
+      chip.title = "Copy the folder's path";
+      const text = document.createElement("span");
+      text.textContent = folder;
+      chip.append(text);
+      chip.insertAdjacentHTML("beforeend", '<i class="ph ph-copy" aria-hidden="true"></i>');
+      chip.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(folder);
+          showToast("Copied the folder's path");
+        } catch {
+          window.getSelection()?.selectAllChildren(text);
+        }
+      });
+      li.append(chip);
+    }
+    return li;
+  }
+
+  // Projects (app/projects.py): a folder in the workspace and the chats
+  // that work in it. The switcher at the top of the rail picks the one in
+  // view; opening a chat brings its project into view.
+  const projectButton = document.getElementById("project-button");
+  const projectMenu = document.getElementById("project-menu");
+  const projectList = document.getElementById("project-list");
+  const projectName = document.getElementById("project-name");
+  const projectNewBtn = document.getElementById("project-new-btn");
+  const projectNewForm = /** @type {HTMLFormElement | null} */ (document.getElementById("project-new-form"));
+  const projectNewName = /** @type {HTMLInputElement | null} */ (document.getElementById("project-new-name"));
+  const projectWillBe = document.getElementById("project-will-be");
+  const projectError = document.getElementById("project-error");
+  const headerProject = document.getElementById("header-project");
+  const heroWhere = document.getElementById("hero-where");
+  const heroProject = document.getElementById("hero-project");
+  const statProject = document.getElementById("stat-project");
+
+  /** A file's path within its project, falling back to its workspace path.
+   * @param {{ name?: string, path: string }} file */
+  function shownPath(file) {
+    return file.name || file.path;
+  }
+
+  /** @param {string | null} project */
+  function projectLabel(project) {
+    return project ? `${project}/` : "workspace/";
+  }
+
+  function projectQuery() {
+    return currentProject ? `?project=${encodeURIComponent(currentProject)}` : "";
+  }
+
+  /** The folder on disk of the project in view, once /api/projects has said. */
+  function projectFolder() {
+    if (!currentProject) return projectsInfo.root;
+    return projectsInfo.projects.find((p) => p.name === currentProject)?.folder || "";
+  }
+
+  function renderProject() {
+    const label = projectLabel(currentProject);
+    if (projectName) projectName.textContent = label;
+    if (statProject) statProject.textContent = label;
+    if (headerProject) {
+      headerProject.textContent = label;
+      headerProject.hidden = !currentProject;
+    }
+    if (heroWhere && heroProject) {
+      heroProject.textContent = label;
+      heroWhere.hidden = !currentProject;
+    }
+    renderProjectMenu();
+  }
+
+  /** Bring `project` into view, as opening one of its chats does.
+   * @param {string | null} project */
+  function showProject(project) {
+    if (project === currentProject) return;
+    currentProject = project;
+    if (project) {
+      localStorage.setItem(PROJECT_KEY, project);
+    } else {
+      localStorage.removeItem(PROJECT_KEY);
+    }
+    renderProject();
+    void loadFiles();
+  }
+
+  async function loadProjects() {
+    try {
+      const res = await fetch("/api/projects");
+      if (!res.ok) return;
+      projectsInfo = await res.json();
+    } catch {
+      return;
+    }
+    const known = projectsInfo.projects.some((p) => p.name === currentProject);
+    if (currentProject && !known && !sessionId) {
+      showProject(null); // its folder has gone since it was last in view
+      void loadSessions();
+      return;
+    }
+    renderProject();
+    void loadFiles(); // the empty state shows the folder's path
+  }
+
+  function renderProjectMenu() {
+    if (!projectList) return;
+    // Redrawn while open when the list arrives: keep keyboard focus in place.
+    const focused = /** @type {HTMLElement | null} */ (projectList.querySelector(":focus"));
+    const focusedProject = focused?.dataset.project;
+    projectList.replaceChildren();
+    for (const name of [null, ...projectsInfo.projects.map((p) => p.name)]) {
+      const li = document.createElement("li");
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "project-item";
+      btn.dataset.project = name ?? "";
+      const current = name === currentProject;
+      if (current) btn.setAttribute("aria-current", "true");
+      btn.innerHTML = current ? '<i class="ph ph-check" aria-hidden="true"></i>' : "<span></span>";
+      const label = document.createElement("span");
+      label.className = "project-item-name";
+      label.textContent = projectLabel(name);
+      if (name === null) {
+        const sub = document.createElement("span");
+        sub.className = "project-item-sub";
+        sub.textContent = "Files outside any project";
+        label.append(sub);
+      }
+      btn.append(label);
+      btn.addEventListener("click", () => switchProject(name));
+      li.append(btn);
+      projectList.append(li);
+      if (focusedProject === btn.dataset.project) btn.focus();
+    }
+  }
+
+  function openProjectMenu() {
+    if (!projectMenu || !projectButton || !projectList) return;
+    renderProjectMenu();
+    void loadProjects(); // folders may have been added on disk
+    projectMenu.hidden = false;
+    projectButton.setAttribute("aria-expanded", "true");
+    const target = projectList.querySelector('[aria-current="true"]') || projectList.querySelector("button");
+    /** @type {HTMLElement | null} */ (target)?.focus();
+  }
+
+  /** @param {{ focus?: boolean }} [opts] */
+  function closeProjectMenu(opts = {}) {
+    if (!projectMenu || !projectButton || projectMenu.hidden) return;
+    projectMenu.hidden = true;
+    projectButton.setAttribute("aria-expanded", "false");
+    hideNewProjectForm();
+    if (opts.focus) projectButton.focus();
+  }
+
+  /** Switch to `project` and start a new chat there. A chat still working
+   * elsewhere carries on, and its project's rail shows it.
+   * @param {string | null} project */
+  function switchProject(project) {
+    closeProjectMenu({ focus: false });
+    if (project === currentProject) return;
+    showProject(project);
+    resetChat();
+    question.focus();
+  }
+
+  /** The folder name the server will make from what's typed (app/projects.py).
+   * @param {string} title */
+  function folderNameFor(title) {
+    return title
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 64)
+      .replace(/-+$/, "");
+  }
+
+  function hideNewProjectForm() {
+    if (!projectNewForm || !projectNewBtn) return;
+    projectNewForm.hidden = true;
+    projectNewBtn.hidden = false;
+    if (projectError) projectError.hidden = true;
+  }
+
+  projectButton?.addEventListener("click", () => {
+    if (projectMenu?.hidden) {
+      openProjectMenu();
+    } else {
+      closeProjectMenu({ focus: true });
+    }
+  });
+
+  projectNewBtn?.addEventListener("click", () => {
+    if (!projectNewForm || !projectNewName) return;
+    projectNewBtn.hidden = true;
+    projectNewForm.hidden = false;
+    projectNewName.value = "";
+    if (projectWillBe) projectWillBe.textContent = "";
+    projectNewName.focus();
+  });
+
+  projectNewName?.addEventListener("input", () => {
+    const name = folderNameFor(projectNewName.value);
+    if (projectWillBe) projectWillBe.textContent = name ? `Creates projects/${name}/` : "";
+    if (projectError) projectError.hidden = true;
+  });
+
+  document.getElementById("project-new-cancel")?.addEventListener("click", () => {
+    hideNewProjectForm();
+    projectNewBtn?.focus();
+  });
+
+  projectNewForm?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!projectNewName) return;
+    try {
+      const res = await fetch("/api/projects", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: projectNewName.value }),
+      });
+      if (!res.ok) {
+        if (projectError) {
+          projectError.textContent = await responseDetail(res);
+          projectError.hidden = false;
+        }
+        return;
+      }
+      const made = await res.json();
+      await loadProjects();
+      switchProject(made.name);
+      showToast(`Made ${projectLabel(made.name)}`);
+    } catch {
+      if (projectError) {
+        projectError.textContent = "Could not make the project. Is Humphrey still running?";
+        projectError.hidden = false;
+      }
+    }
+  });
+
+  projectMenu?.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      closeProjectMenu({ focus: true });
+      return;
+    }
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    if (event.target instanceof HTMLInputElement) return;
+    const items = /** @type {HTMLElement[]} */ (
+      [...projectMenu.querySelectorAll(".project-item")].filter((el) => !(/** @type {HTMLElement} */ (el).hidden))
+    );
+    const at = items.indexOf(/** @type {HTMLElement} */ (document.activeElement));
+    const step = event.key === "ArrowDown" ? 1 : -1;
+    items[(at + step + items.length) % items.length]?.focus();
+    event.preventDefault();
+  });
+
+  document.addEventListener("pointerdown", (event) => {
+    const switcher = document.getElementById("project-switcher");
+    if (switcher && event.target instanceof Node && !switcher.contains(event.target)) {
+      closeProjectMenu({ focus: false });
+    }
+  });
 
   /** Mermaid theme from the live CSS tokens, so diagrams follow light/dark. */
   function mermaidTheme() {
@@ -3016,13 +3298,15 @@
     if (!sessionList) {
       return;
     }
+    const project = currentProject;
     try {
-      const res = await fetch("/api/sessions");
+      const res = await fetch(`/api/sessions${projectQuery()}`);
       if (!res.ok) {
         return;
       }
       /** @type {{ id: string, title?: string, message_count?: number, updated_at?: string }[]} */
       const rows = await res.json();
+      if (project !== currentProject) return; // a switch overtook this answer
       sessionList.replaceChildren();
       if (sessionsCount) {
         if (rows.length) {
@@ -3035,7 +3319,7 @@
       if (!rows.length) {
         const empty = document.createElement("li");
         empty.className = "session-empty";
-        empty.textContent = "No recent chats";
+        empty.textContent = "No chats yet";
         sessionList.append(empty);
         return;
       }
@@ -3085,6 +3369,7 @@
         return;
       }
       const data = await res.json();
+      showProject(typeof data.project === "string" ? data.project : null);
       const rows = (data.messages || []).filter(
         (m) => m && (m.content || m.role === "tool" || (Array.isArray(m.images) && m.images.length > 0)),
       );
@@ -3658,6 +3943,8 @@
               ...(pushedMessage.images ? { images: pushedMessage.images } : {}),
             },
             session_id: sessionId,
+            // Only a new chat uses this; an existing one keeps its own project.
+            ...(currentProject ? { project: currentProject } : {}),
             ...(selectedModel ? { model: selectedModel } : {}),
             ...(selectedEffort ? { reasoning_effort: selectedEffort } : {}),
           }),
@@ -3916,6 +4203,8 @@
   updateStats();
   updateLatestButton();
   setRunning(false);
+  renderProject();
+  void loadProjects();
   void probeHealth();
   void loadSessions();
   void restoreSession().then(() => {

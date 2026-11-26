@@ -75,6 +75,7 @@
             <span class="hb-mark" aria-hidden="true"></span>
             Humphrey
           </a>
+          <span class="header-project" id="header-project" hidden></span>
         </div>
         <div class="header-right">
           <div class="status-pill" id="status-pill" aria-live="polite">
@@ -130,6 +131,45 @@
             <span class="rail-count" id="sessions-count" hidden>0</span>
           </div>
           <div class="rail-panel" id="sessions-panel">
+            <div class="project-switcher" id="project-switcher">
+              <button
+                type="button"
+                class="project-button"
+                id="project-button"
+                aria-haspopup="true"
+                aria-expanded="false"
+                aria-controls="project-menu"
+              >
+                <i class="ph ph-folder-simple" aria-hidden="true"></i>
+                <span class="visually-hidden">Project:</span>
+                <span class="project-name" id="project-name">workspace/</span>
+                <i class="ph ph-caret-up-down" aria-hidden="true"></i>
+              </button>
+              <div class="project-menu" id="project-menu" hidden>
+                <ul class="project-list" id="project-list" aria-label="Projects"></ul>
+                <div class="project-menu-rule" aria-hidden="true"></div>
+                <button type="button" class="project-item project-new-btn" id="project-new-btn">
+                  <i class="ph ph-plus" aria-hidden="true"></i>
+                  <span>New project</span>
+                </button>
+                <form class="project-new-form" id="project-new-form" hidden>
+                  <label for="project-new-name">Project name</label>
+                  <input
+                    id="project-new-name"
+                    name="project-new-name"
+                    maxlength="200"
+                    autocomplete="off"
+                    placeholder="Q4 board pack"
+                  />
+                  <p class="project-will-be" id="project-will-be" aria-live="polite"></p>
+                  <p class="project-error" id="project-error" role="alert" hidden></p>
+                  <div class="project-new-actions">
+                    <button type="button" class="btn-ghost btn-sm" id="project-new-cancel">Cancel</button>
+                    <button type="submit" class="btn-primary btn-sm" id="project-new-create">Create</button>
+                  </div>
+                </form>
+              </div>
+            </div>
             <div class="rail-panel-head">
               <button type="button" class="btn-primary btn-block" id="new-chat">New chat</button>
               <button
@@ -141,7 +181,7 @@
                 <i class="ph ph-caret-left" aria-hidden="true"></i>
               </button>
             </div>
-            <p class="rail-section-label">Recents</p>
+            <p class="rail-section-label">Chats</p>
             <ul class="session-list" id="session-list"></ul>
             <p class="rail-section-label">Files</p>
             <ul class="session-list files-list" id="files-list"></ul>
@@ -156,6 +196,10 @@
                 Humphrey
               </h1>
               <p class="empty-lede">How can I help?</p>
+              <p class="empty-where" id="hero-where" hidden>
+                <i class="ph ph-folder-simple" aria-hidden="true"></i>
+                Working in <span class="path" id="hero-project"></span>
+              </p>
             </section>
 
             <div class="transcript" id="transcript"></div>
@@ -277,6 +321,10 @@
               </button>
             </div>
             <dl class="stats-list" id="stats-list">
+              <div class="stats-row">
+                <dt>Project</dt>
+                <dd class="path" id="stat-project">workspace/</dd>
+              </div>
               <div class="stats-row stats-row-access" id="access-row" hidden>
                 <dt>Access</dt>
                 <dd>
