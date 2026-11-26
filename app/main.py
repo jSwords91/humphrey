@@ -468,7 +468,8 @@ async def get_session(session_id: str) -> SessionOut:
         run = None
     session = await get_session_store().get(session_id)
     if session is None and run is not None:
-        session = Session(id=session_id)  # a new chat: stored once its first turn is
+        # A new chat: stored once its first turn is, and working in its run's project.
+        session = Session(id=session_id, project=run.project)
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found.")
     rows = session.history_rows()

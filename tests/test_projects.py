@@ -129,6 +129,11 @@ async def test_a_project_chat_mid_first_turn_is_listed_in_its_project(client: As
         raise AssertionError("the run never asked")
 
     assert str(WORKSPACE_DIR / "projects" / name) in run.harness.config.system  # its prompt
+    # Opened mid-turn, before anything is stored, it still says which project
+    # it's in: found running Humphrey for real, where the page took it for
+    # the default project and started the next chat there.
+    reopened = (await client.get(f"/api/sessions/{session_id}")).json()
+    assert reopened["project"] == name
     in_project = (await client.get("/api/sessions", params={"project": name})).json()
     assert [r["id"] for r in in_project] == [session_id]
     assert session_id not in [r["id"] for r in (await client.get("/api/sessions")).json()]
