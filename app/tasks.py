@@ -174,8 +174,10 @@ async def _run(task: Task, prompt: str, seed: list[AgentMessage], model: str | N
         except Exception as exc:  # noqa: BLE001 - the chat that started it must still hear
             logger.exception("task %s failed", task.id)
             task.status, task.result = "failed", f"The task broke: {exc}"
-    task.state = "done"
+    # Done once the result is handed over: until then the task still shows
+    # as working, so nothing watching sees neither it nor the reply.
     await _deliver(task, model, effort)
+    task.state = "done"
 
 
 async def _outcome(task_id: str, *, stopped: bool) -> tuple[Status, str]:

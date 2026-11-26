@@ -1690,6 +1690,11 @@
   let activityAt = 0;
   // Set while the page reopens the chat to follow a turn it didn't start.
   let catchingUp = false;
+  // Tasks this page has seen under way, and those it has since caught up
+  // on: a task's result can arrive, and Humphrey reply to it, between two
+  // looks at the list, so a task seen working that has gone is the signal.
+  const tasksSeen = new Set();
+  const tasksCaughtUp = new Set();
 
   async function loadActivity() {
     let next;
@@ -1709,11 +1714,25 @@
     const unlisted = next.some((/** @type {any} */ a) => a.project === currentProject && !listed(a.session_id));
     activity = next;
     activityAt = askedAt;
+    for (const a of activity) tasksSeen.add(a.session_id);
     paintActivity();
     // The open chat started a turn this page isn't following: a task's
-    // result came back, or another tab sent something. Follow it.
+    // result came back, or another tab sent something. Follow it. Or one
+    // of its tasks this page saw working has gone with no result drawn: its
+    // result and Humphrey's reply may have come and gone between looks.
     const open = sessionId;
-    if (open && !activeRun && !catchingUp && activity.some((a) => a.session_id === open && a.state !== "queued")) {
+    const missed = [...transcript.querySelectorAll('.task-card[data-kind="started"]')]
+      .map((el) => String(/** @type {HTMLElement} */ (el).dataset.taskId))
+      .filter(
+        (id) =>
+          tasksSeen.has(id) &&
+          !tasksCaughtUp.has(id) &&
+          !activity.some((a) => a.session_id === id) &&
+          !transcript.querySelector(`.task-card[data-kind="result"][data-task-id="${CSS.escape(id)}"]`),
+      );
+    for (const id of missed) tasksCaughtUp.add(id);
+    const following = activity.some((a) => a.session_id === open && a.state !== "queued");
+    if (open && !activeRun && !catchingUp && (following || missed.length)) {
       catchingUp = true;
       void openSession(open, { silent: true }).finally(() => {
         catchingUp = false;
@@ -4031,7 +4050,11 @@
     }
 
     if (type === "task_notification") {
-      appendTaskResult(event);
+      // A page that reopened the chat to follow this turn already drew it.
+      const drawn = [...transcript.querySelectorAll('.task-card[data-kind="result"]')].some(
+        (el) => /** @type {HTMLElement} */ (el).dataset.taskId === String(event.task_id ?? ""),
+      );
+      if (!drawn) appendTaskResult(event);
       state.toolGroupEl = null;
       pinToBottom();
       void loadActivity();
