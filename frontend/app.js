@@ -1183,6 +1183,27 @@
     artifactViewer.showModal();
   }
 
+  // A reply's link to a file in the chat's project (markdown.js marks them
+  // md-file-link) opens that file in the viewer, as its artefact card would.
+  document.addEventListener("click", async (event) => {
+    const link = event.target instanceof Element ? event.target.closest("a.md-file-link") : null;
+    if (!(link instanceof HTMLElement)) return;
+    event.preventDefault();
+    const name = (link.dataset.path || "").replace(/^\.\//, "");
+    try {
+      const res = await fetch(`/api/files${projectQuery()}`);
+      const files = res.ok ? await res.json() : [];
+      const file = files.find((/** @type {any} */ f) => shownPath(f) === name);
+      if (file) {
+        openArtifactViewer(file);
+      } else {
+        showToast(`${name} isn't in this project's files`);
+      }
+    } catch {
+      showToast("Could not open the file");
+    }
+  });
+
   artifactViewer?.addEventListener("click", (event) => {
     if (event.target === artifactViewer) artifactViewer.close(); // backdrop click
   });
