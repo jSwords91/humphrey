@@ -47,11 +47,13 @@ class FileStamp:
     size: int
 
 
-def scan_workspace(root: Path) -> dict[str, FileStamp]:
-    """Relative path (POSIX) -> stamp for every file worth tracking."""
+def scan_workspace(root: Path, exclude: frozenset[str] = frozenset()) -> dict[str, FileStamp]:
+    """Relative path (POSIX) -> stamp for every file worth tracking, leaving
+    out the top-level folders named in ``exclude``."""
     stamps: dict[str, FileStamp] = {}
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in IGNORED_DIRS and not d.startswith(".")]
+        skip = IGNORED_DIRS | exclude if Path(dirpath) == root else IGNORED_DIRS
+        dirnames[:] = [d for d in dirnames if d not in skip and not d.startswith(".")]
         for name in filenames:
             if name.startswith("."):
                 continue
@@ -83,20 +85,21 @@ class ArtifactTracker:
     separate folders tell those apart.
     """
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, exclude: frozenset[str] = frozenset()) -> None:
         self._root = root.resolve()
+        self._exclude = exclude
         self._before: dict[str, FileStamp] | None = None
 
     def tool_started(self, tool_name: str) -> None:
         if tool_name in COMMAND_TOOLS:
-            self._before = scan_workspace(self._root)
+            self._before = scan_workspace(self._root, self._exclude)
 
     def tool_finished(self, tool_name: str, details: object, is_error: bool) -> list[dict[str, object]]:
         if tool_name in NAMING_TOOLS and not is_error:
             return self._named(details)
         if tool_name in COMMAND_TOOLS and self._before is not None:
             before, self._before = self._before, None
-            current = scan_workspace(self._root)
+            current = scan_workspace(self._root, self._exclude)
             changed = sorted(path for path, stamp in current.items() if before.get(path) != stamp)
             return [_artifact(path, current[path]) for path in changed]
         return []

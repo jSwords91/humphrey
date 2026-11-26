@@ -224,6 +224,31 @@ async def test_a_corrupt_summary_is_rebuilt(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_the_session_list_is_one_projects(tmp_path: Path) -> None:
+    """A chat's project is in its summary; one from before projects, with no
+    project there, is in the default project. Chats in other projects don't
+    take the list's slots."""
+    store, backing = _store(tmp_path)
+    for i, project in enumerate(["q3-sales", None, "q3-sales", "q3-sales"]):
+        await store.save(Session(id=f"projectchat0000{i}", title=f"Chat {i}", project=project))
+        os.utime(tmp_path / "sessions" / f"projectchat0000{i}.json", (1_000 + i, 1_000 + i))
+    old = Session(id="oldsession000001", title="From before")
+    data = old.to_dict()
+    del data["project"]
+    backing.put_bytes("sessions/oldsession000001.json", json.dumps(data).encode())
+    os.utime(tmp_path / "sessions" / "oldsession000001.json", (999, 999))
+
+    in_project = await store.list_recent(limit=2, project="q3-sales")
+    assert [(s.id, s.project) for s in in_project] == [
+        ("projectchat00003", "q3-sales"),
+        ("projectchat00002", "q3-sales"),
+    ]
+    in_default = await store.list_recent()
+    assert [s.id for s in in_default] == ["projectchat00001", "oldsession000001"]
+    assert (await store.get("projectchat00000")).project == "q3-sales"
+
+
+@pytest.mark.asyncio
 async def test_stray_objects_do_not_take_the_list_slots(tmp_path: Path) -> None:
     """The list used to take the newest keys first and filter after, so a
     stray object could push a real session out of it."""

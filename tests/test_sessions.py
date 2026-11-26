@@ -96,7 +96,7 @@ async def test_fallback_store_demotes_and_preserves_conversation_continuity() ->
         async def save(self, session: Session) -> None:
             raise PermissionError("not authorized")
 
-        async def list_recent(self, *, limit: int = 20) -> list:
+        async def list_recent(self, *, limit: int = 20, project=None) -> list:
             raise PermissionError("not authorized")
 
     fallback = MemorySessionStore()
@@ -123,7 +123,7 @@ async def test_fallback_store_only_logs_demotion_once() -> None:
         async def save(self, session: Session) -> None:
             raise PermissionError("not authorized")
 
-        async def list_recent(self, *, limit: int = 20) -> list:
+        async def list_recent(self, *, limit: int = 20, project=None) -> list:
             raise PermissionError("not authorized")
 
     store = FallbackSessionStore(_BrokenOnce(), MemorySessionStore())
