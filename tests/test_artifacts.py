@@ -17,22 +17,37 @@ from app.artifacts import (
 )
 
 
-def test_tracker_reports_new_and_modified_files_but_not_unchanged(tmp_path: Path) -> None:
-    (tmp_path / "old.txt").write_text("same")
+def test_write_and_edit_claim_the_file_they_name(tmp_path: Path) -> None:
     tracker = ArtifactTracker(tmp_path)
-    (tmp_path / "report.md").write_text("# hi")
     (tmp_path / "charts").mkdir()
     (tmp_path / "charts" / "sales.html").write_text("<p>chart</p>")
+    (tmp_path / "other.md").write_text("changed by someone else")
+
+    made = tracker.tool_finished("write", {"path": str(tmp_path / "charts" / "sales.html")}, False)
+    assert [(a["path"], a["kind"]) for a in made] == [("charts/sales.html", "html")]
+    assert tracker.tool_finished("edit", {"path": str(tmp_path / "missing.md")}, False) == []
+    assert tracker.tool_finished("write", {"path": str(tmp_path / "charts" / "sales.html")}, True) == []
+    (tmp_path / ".env").write_text("x")
+    assert tracker.tool_finished("write", {"path": str(tmp_path / ".env")}, False) == []
+
+
+def test_bash_claims_only_what_changes_while_it_runs(tmp_path: Path) -> None:
+    """Another chat, or the person, may change files between this run's tool
+    calls; only changes during its own command are its."""
+    (tmp_path / "old.txt").write_text("same")
+    tracker = ArtifactTracker(tmp_path)
+    (tmp_path / "before.md").write_text("made before the command, by someone else")
+
+    tracker.tool_started("bash")
+    (tmp_path / "report.md").write_text("# hi")
     (tmp_path / "node_modules").mkdir()
     (tmp_path / "node_modules" / "noise.js").write_text("x")
+    made = tracker.tool_finished("bash", {"exit_code": 0}, False)
+    assert [a["path"] for a in made] == ["report.md"]
 
-    changes = tracker.changes()
-    assert [c["path"] for c in changes] == ["charts/sales.html", "report.md"]
-    assert {c["kind"] for c in changes} == {"html", "markdown"}
-    assert tracker.changes() == []  # nothing new since the last call
-
-    (tmp_path / "report.md").write_text("# hi, longer now")
-    assert [c["path"] for c in tracker.changes()] == ["report.md"]
+    (tmp_path / "after.md").write_text("made after it, by someone else")
+    tracker.tool_started("read")
+    assert tracker.tool_finished("read", {"path": str(tmp_path / "after.md")}, False) == []
 
 
 @pytest.mark.parametrize(

@@ -246,6 +246,68 @@ async def test_reopening_while_the_turn_saves_counts_its_usage_once(client: Asyn
 
 
 @pytest.mark.asyncio
+async def test_a_file_another_chat_writes_is_not_this_chats_artefact(client: AsyncClient) -> None:
+    """Found once runs outlived the page: two chats can work at once, and a
+    chat's artefacts came from comparing the whole workspace after each of
+    its tools, so a file the other chat wrote while this one waited on a
+    question became this chat's too."""
+    waiting = uuid.uuid4().hex
+    request = _start(client, waiting)
+    request_id = await _asking(waiting)
+
+    writer = uuid.uuid4().hex
+    await client.post("/api/agent", json={"message": {"content": "write a note"}, "session_id": writer})
+    await _ended(writer)
+
+    await client.post(f"/api/sessions/{waiting}/ui/{request_id}", json=ANSWER)
+    await request
+    await _ended(waiting)
+    wrote = (await client.get(f"/api/sessions/{writer}")).json()["artifacts"]
+    asked = (await client.get(f"/api/sessions/{waiting}")).json()["artifacts"]
+    assert [a["path"] for a in wrote] == ["notes.md"]
+    assert asked == []
+
+
+@pytest.mark.asyncio
+async def test_activity_says_which_chats_are_working_or_waiting(client: AsyncClient) -> None:
+    session_id = uuid.uuid4().hex
+    assert session_id not in [a["session_id"] for a in (await client.get("/api/activity")).json()]
+
+    request = _start(client, session_id)
+    await _asking(session_id)
+    [waiting] = [a for a in (await client.get("/api/activity")).json() if a["session_id"] == session_id]
+    assert waiting == {"session_id": session_id, "project": None, "state": "needs_you"}
+
+    await client.post(f"/api/sessions/{session_id}/stop", json={})
+    await request
+    await _ended(session_id)
+    assert session_id not in [a["session_id"] for a in (await client.get("/api/activity")).json()]
+
+
+def test_a_run_is_working_until_its_model_is_done() -> None:
+    from app.agent import build_harness
+    from app.runs import Run
+    from app.ui_bridge import WebUiBridge
+    from brain.messages import UserMessage
+
+    harness = build_harness()
+    bridge = WebUiBridge(lambda payload: None)
+    run = Run(
+        "s",
+        harness=harness,
+        bridge=bridge,
+        log=FrameLog(),
+        prompt="hi",
+        started_ms=0,
+        new_chat=True,
+        project=None,
+    )
+    assert run.state is None
+    harness.prompt_message(UserMessage(content="hi"))  # started, as /api/agent does
+    assert run.state == "working"
+
+
+@pytest.mark.asyncio
 async def test_a_late_follower_gets_every_frame_then_the_live_ones() -> None:
     log = FrameLog()
     log.publish("one")

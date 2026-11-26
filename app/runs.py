@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Coroutine
-from typing import Any
+from typing import Any, Literal
 
 from app.ui_bridge import WebUiBridge
 from brain.harness import AgentHarness
@@ -74,6 +74,7 @@ class Run:
         prompt: str,
         started_ms: int,
         new_chat: bool,
+        project: str | None,
     ) -> None:
         self.session_id = session_id
         self.harness = harness
@@ -87,9 +88,18 @@ class Run:
         # Nothing is stored for a new chat until this turn is, so until
         # then the run is what lists and opens it.
         self.new_chat = new_chat
+        self.project = project
         self.stopped = False
         self._saved = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
+
+    @property
+    def state(self) -> Literal["working", "needs_you"] | None:
+        """What the person should know: it's working, or it's waiting on
+        their answer. None once the model is done (saving, naming)."""
+        if self.bridge.waiting:
+            return "needs_you"
+        return "working" if self.harness.is_running else None
 
     @property
     def saved(self) -> bool:

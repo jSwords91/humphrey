@@ -19,6 +19,7 @@ it inline as an artefact.</sub>
 - Image attachments
 - Rendered Mermaid diagrams
 - Persistent, auto-named sessions with automatic context compaction
+- Projects: a folder for each piece of work, with its own chats and files
 - Runs on OpenAI with an API key or your ChatGPT plan, with an offline mock
   that needs no credentials and an optional Azure OpenAI adapter
 
@@ -150,9 +151,10 @@ Humphrey has tau's four coding tools, plus one for asking you questions:
 | `bash` | Run a shell command |
 | `ask_user_question` | Ask you one to four clarifying questions, each with a few options, and wait for your answer |
 
-They work in `workspace/` (or `HUMPHREY_WORKSPACE`). Relative paths land
-there, and `read`, `write` and `edit` refuse any path that ends up outside
-it, so they can't touch Humphrey's own code, your `.env` or your ChatGPT
+They work in the chat's project folder: `workspace/` (or
+`HUMPHREY_WORKSPACE`), or one of its projects (see below). Relative paths
+land there, and `read`, `write` and `edit` refuse any path that ends up
+outside it, so they can't touch Humphrey's own code, your `.env` or your ChatGPT
 sign-in. `read` can also open the skills and the saved output of long `bash`
 commands. Skills are loaded the tau way: the prompt lists each `SKILL.md`
 path and the model reads it with `read`.
@@ -173,11 +175,39 @@ A `bash` command is stopped after two minutes unless the model asks for
 longer, up to ten, so one that never exits (a server, a prompt waiting for
 input) can't hold up a turn.
 
+## Projects
+
+A project is a folder under `workspace/projects/`, and the chats that work
+in it. Pick one, or make one, with the switcher at the top of the sessions
+rail; the rail then lists that project's chats and files, and a new chat
+works in its folder. Every folder under `projects/` is a project, so one
+you make on disk shows up too, and an empty project's Files list gives its
+full path so you can put your own files there.
+
+The rail marks chats with a turn under way, in any project: a working chat
+carries the travelling band, and one waiting on your answer says "needs
+you". A coral count on the switcher says how many chats in other projects
+are waiting on you, and the collapsed rail shows the same for every chat
+but the one you have open.
+
+Chats you started before projects, and chats started without one, work in
+`workspace/` itself, the default project, which leaves `projects/` out of
+its file list.
+
+The switcher's menu can also rename the project you're in, which renames
+its folder and moves its chats along (once none of them is working), or
+hide it, which keeps it out of the list until you pick it again under
+"Show hidden". Hiding writes a `.humphrey-hidden` file in the folder; delete
+it to undo. Humphrey never deletes a project's folder. If you rename or
+remove one on disk, its chats are listed under "Folder missing": they can
+still be read, and say so if you message them. Typing in the menu jumps to
+a project.
+
 ## Artefacts
 
-Any file the agent creates or changes in the workspace (via `write`, `edit`,
-or a `bash` command such as a script that saves a chart) appears inline in
-the conversation as an artefact card, and comes back in place when you reopen
+Any file a chat's tools create or change in its folder (the file `write` or
+`edit` names, or what changes while a `bash` command runs, such as a script
+that saves a chart) appears inline in the conversation as an artefact card, and comes back in place when you reopen
 the chat. Previews by type:
 
 | Files | Preview |
@@ -191,8 +221,8 @@ the chat. Previews by type:
 | `.pdf` | The browser's PDF viewer |
 
 Each card can show its source, open in a new tab, download, or expand to
-fullscreen. All workspace files are also listed under Files in the sessions
-rail. The `html-artifacts` skill teaches the model to build charts and
+fullscreen. The project's files are also listed under Files in the
+sessions rail. The `html-artifacts` skill teaches the model to build charts and
 dashboards in Humphrey's palette with the vendored Chart.js
 (`/vendor/chart.umd.min.js`). Files are served from `/api/files` under a CSP
 sandbox: HTML can run scripts but never call Humphrey's API.

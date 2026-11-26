@@ -457,6 +457,346 @@ button:active:not(:disabled):not(.latest-btn):not(.btn-send) {
   color: var(--color-muted);
 }
 
+/* Projects: the switcher at the top of the rail names the folder the
+   chats and files below it belong to. Folder names are paths, so mono. */
+
+.path {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  color: var(--color-mono);
+}
+
+.project-switcher {
+  position: relative;
+}
+
+.project-button {
+  appearance: none;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0.5rem 0.65rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-inset);
+  color: var(--color-muted);
+  font: inherit;
+  cursor: pointer;
+  transition: background-color var(--duration) var(--ease), border-color var(--duration) var(--ease);
+}
+
+.project-button:hover,
+.project-button[aria-expanded="true"] {
+  background: var(--color-elevated);
+  border-color: var(--color-border-strong);
+}
+
+.project-name {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  color: var(--color-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  max-height: min(70vh, 30rem);
+  overflow-y: auto;
+  background: var(--color-elevated);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-md);
+}
+
+.project-menu[hidden] {
+  display: none;
+}
+
+.project-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.project-item {
+  appearance: none;
+  width: 100%;
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0.45rem 0.5rem;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-fg);
+  font: inherit;
+  font-size: var(--fs-sm);
+  text-align: left;
+  cursor: pointer;
+}
+
+.project-item:hover,
+.project-item:focus-visible {
+  background: var(--color-hover);
+}
+
+.project-item[aria-current="true"] {
+  background: var(--color-hover);
+}
+
+.project-item .ph-check {
+  color: var(--hb-accent);
+}
+
+.project-item-name {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-item-sub {
+  display: block;
+  font-family: var(--font-sans);
+  font-size: 0.6875rem;
+  color: var(--color-muted-soft);
+  white-space: normal; /* the name stays on one line; what's under it wraps */
+}
+
+.project-action .ph {
+  color: var(--color-muted);
+}
+
+.project-menu-rule {
+  border-top: 1px solid var(--color-border);
+  margin: 4px 2px;
+}
+
+.project-new-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 4px 6px 6px;
+}
+
+.project-new-form[hidden] {
+  display: none;
+}
+
+.project-new-form label {
+  font-size: 0.6875rem;
+  color: var(--color-muted);
+}
+
+.project-new-form input {
+  height: 2rem;
+  padding: 0 0.6rem;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-inset);
+  color: var(--color-fg);
+  font: inherit;
+  font-size: var(--fs-sm);
+}
+
+.project-new-form input:focus-visible {
+  outline: none;
+  border-color: var(--hb-accent);
+}
+
+.project-will-be {
+  min-height: 1em;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  color: var(--color-muted-soft);
+  overflow-wrap: anywhere;
+}
+
+.project-error {
+  font-size: 0.75rem;
+  color: var(--hb-attention-text);
+}
+
+.project-new-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.btn-sm {
+  padding: 0.3rem 0.7rem;
+  font-size: 0.75rem;
+}
+
+/* Chats with a turn under way (/api/activity): a working chat carries the
+   travelling band, as tool cards do; one waiting on an answer says so in
+   the Needs-you colour. The coral count says how many wait elsewhere. */
+
+.session-item[data-state="working"],
+.session-item[data-state="needs_you"] {
+  position: relative;
+  overflow: hidden;
+}
+
+.session-item[data-state="working"]::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: var(--hb-band);
+  background-size: 28px 100%;
+  animation: hb-band 1.2s linear infinite;
+}
+
+.session-item[data-state="working"] .session-meta,
+.project-item-state[data-state="working"] {
+  color: var(--hb-working-text);
+}
+
+.session-item[data-state="needs_you"] .session-meta,
+.project-item-state[data-state="needs_you"] {
+  color: var(--hb-attention-text);
+}
+
+.session-item[data-state="working"] .session-meta::before,
+.session-item[data-state="needs_you"] .session-meta::before,
+.project-item-state:not(:empty)::before,
+.needs-badge::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  vertical-align: 0.1em;
+}
+
+.project-item-state {
+  display: block;
+  font-family: var(--font-sans);
+  font-size: 0.6875rem;
+}
+
+.project-item-state:empty {
+  display: none;
+}
+
+.needs-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: var(--radius-pill);
+  background: var(--color-attention-dim);
+  color: var(--hb-attention-text);
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  line-height: 1.4;
+}
+
+.needs-badge::before {
+  margin-right: 5px;
+}
+
+.needs-badge[hidden] {
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .session-item[data-state="working"]::after {
+    animation: none;
+  }
+}
+
+/* An empty project's Files list: where to put your own files. */
+.files-empty {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  font-size: 0.75rem;
+  color: var(--color-muted);
+}
+
+.path-chip {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  width: 100%;
+  padding: 0.4rem 0.55rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-inset);
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  color: var(--color-mono);
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+.path-chip .ph {
+  flex: none;
+  color: var(--color-muted);
+}
+
+.path-chip:hover .ph {
+  color: var(--color-fg);
+}
+
+/* With the rail collapsed, the header names the project instead. */
+.header-project {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  color: var(--color-mono);
+}
+
+.header-project::before {
+  content: "/";
+  margin-right: var(--space-3);
+  color: var(--color-muted-soft);
+}
+
+.shell[data-sessions-open="1"] .header-project {
+  display: none;
+}
+
+.empty-where {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-sm);
+  color: var(--color-muted);
+}
+
+.empty-where[hidden] {
+  display: none;
+}
+
 /* Stats */
 
 .stats-ring-btn {

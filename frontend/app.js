@@ -58,6 +58,13 @@
   let pendingAttachments = [];
   /** @type {string | null} */
   let sessionId = localStorage.getItem(SESSION_KEY);
+  const PROJECT_KEY = "humphrey.project";
+  /** The project in view: where new chats work, and whose chats and files
+   * the rail lists. Null is the default project, the workspace itself.
+   * @type {string | null} */
+  let currentProject = localStorage.getItem(PROJECT_KEY);
+  /** @type {{ root: string, projects: { name: string, folder: string, hidden: boolean }[], missing: string[] }} */
+  let projectsInfo = { root: "", projects: [], missing: [] };
   /** @type {{ kind: "steer" | "follow-up"; text: string }[]} */
   let queue = [];
   let pinnedToBottom = true;
@@ -885,7 +892,7 @@
       if (art.kind === "html") {
         const frame = document.createElement("iframe");
         frame.className = "artifact-frame";
-        frame.title = art.path;
+        frame.title = shownPath(art);
         frame.setAttribute("sandbox", "allow-scripts allow-popups");
         frame.setAttribute("loading", "lazy");
         frame.src = fileUrl(art.path, { embed: "true", theme: currentTheme(), v: String(art.mtime ?? "") });
@@ -896,7 +903,7 @@
       if (art.kind === "image") {
         const img = document.createElement("img");
         img.className = "artifact-image";
-        img.alt = art.path;
+        img.alt = shownPath(art);
         img.loading = "lazy";
         img.src = fileUrl(art.path, { v: String(art.mtime ?? "") });
         if (!opts.full) img.addEventListener("click", () => openArtifactViewer(art));
@@ -906,7 +913,7 @@
       if (art.kind === "pdf") {
         const frame = document.createElement("iframe");
         frame.className = "artifact-frame artifact-pdf";
-        frame.title = art.path;
+        frame.title = shownPath(art);
         frame.src = fileUrl(art.path, { v: String(art.mtime ?? "") });
         body.append(frame);
         return;
@@ -1032,7 +1039,7 @@
     title.className = "artifact-title";
     const name = document.createElement("span");
     name.className = "artifact-name";
-    name.textContent = art.path;
+    name.textContent = shownPath(art);
     const meta = document.createElement("span");
     meta.className = "artifact-meta";
     meta.textContent = [ARTIFACT_LABELS[art.kind] || "File", formatBytes(art.size)].filter(Boolean).join(" · ");
@@ -1096,7 +1103,7 @@
     card.className = "artifact";
     if (opts.animate !== false) card.classList.add("msg-enter");
     card.dataset.kind = art.kind;
-    card.setAttribute("aria-label", `${ARTIFACT_LABELS[art.kind] || "File"} artefact ${art.path}`);
+    card.setAttribute("aria-label", `${ARTIFACT_LABELS[art.kind] || "File"} artefact ${shownPath(art)}`);
 
     const body = document.createElement("div");
     body.className = "artifact-body";
@@ -1203,16 +1210,20 @@
 
   async function loadFiles() {
     if (!filesList) return;
+    const project = currentProject;
     try {
-      const res = await fetch("/api/files");
+      const res = await fetch(`/api/files${projectQuery()}`);
+      if (project !== currentProject) return; // a switch overtook this answer
+      if (res.status === 404) {
+        filesList.replaceChildren(missingFolderState());
+        return;
+      }
       if (!res.ok) return;
       const files = await res.json();
+      if (project !== currentProject) return;
       filesList.replaceChildren();
       if (!files.length) {
-        const empty = document.createElement("li");
-        empty.className = "session-empty";
-        empty.textContent = "Files Humphrey makes appear here.";
-        filesList.append(empty);
+        filesList.append(filesEmptyState());
         return;
       }
       for (const file of files.slice(0, 50)) {
@@ -1223,9 +1234,9 @@
         btn.innerHTML = `<i class="ph ${ARTIFACT_ICONS[file.kind] || "ph-file"}" aria-hidden="true"></i>`;
         const name = document.createElement("span");
         name.className = "session-title";
-        name.textContent = file.path;
+        name.textContent = shownPath(file);
         btn.append(name);
-        btn.title = `${file.path} · ${formatBytes(file.size)}`;
+        btn.title = `${shownPath(file)} · ${formatBytes(file.size)}`;
         btn.addEventListener("click", () => openArtifactViewer(file));
         li.append(btn);
         filesList.append(li);
@@ -1234,6 +1245,518 @@
       /* the list just stays as it was */
     }
   }
+
+  /** The project's folder has been renamed or removed on disk. */
+  function missingFolderState() {
+    const li = document.createElement("li");
+    li.className = "files-empty";
+    li.textContent = `Its folder, projects/${currentProject}/, isn't there any more. Its chats can still be read.`;
+    return li;
+  }
+
+  /** No files yet: say where the person's own files go, ready to copy. */
+  function filesEmptyState() {
+    const li = document.createElement("li");
+    li.className = "files-empty";
+    const note = document.createElement("span");
+    note.textContent = "No files yet. Put your own files here and Humphrey can use them:";
+    li.append(note);
+    const folder = projectFolder();
+    if (folder) {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "path-chip";
+      chip.title = "Copy the folder's path";
+      const text = document.createElement("span");
+      text.textContent = folder;
+      chip.append(text);
+      chip.insertAdjacentHTML("beforeend", '<i class="ph ph-copy" aria-hidden="true"></i>');
+      chip.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(folder);
+          showToast("Copied the folder's path");
+        } catch {
+          window.getSelection()?.selectAllChildren(text);
+        }
+      });
+      li.append(chip);
+    }
+    return li;
+  }
+
+  // Projects (app/projects.py): a folder in the workspace and the chats
+  // that work in it. The switcher at the top of the rail picks the one in
+  // view; opening a chat brings its project into view.
+  const projectButton = document.getElementById("project-button");
+  const projectMenu = document.getElementById("project-menu");
+  const projectList = document.getElementById("project-list");
+  const projectName = document.getElementById("project-name");
+  const projectNewBtn = document.getElementById("project-new-btn");
+  const projectRenameBtn = document.getElementById("project-rename-btn");
+  const projectHideBtn = document.getElementById("project-hide-btn");
+  const projectFormLabel = document.getElementById("project-form-label");
+  const projectFormSubmit = document.getElementById("project-new-create");
+  /** Whether the menu lists hidden projects, until it next opens. */
+  let showHidden = false;
+  /** @type {"new" | "rename"} */
+  let projectFormMode = "new";
+  // Type-ahead in the menu: what's been typed, and when.
+  let typed = "";
+  let typedAt = 0;
+  const projectNewForm = /** @type {HTMLFormElement | null} */ (document.getElementById("project-new-form"));
+  const projectNewName = /** @type {HTMLInputElement | null} */ (document.getElementById("project-new-name"));
+  const projectWillBe = document.getElementById("project-will-be");
+  const projectError = document.getElementById("project-error");
+  const headerProject = document.getElementById("header-project");
+  const heroWhere = document.getElementById("hero-where");
+  const heroProject = document.getElementById("hero-project");
+  const statProject = document.getElementById("stat-project");
+
+  /** A file's path within its project, falling back to its workspace path.
+   * @param {{ name?: string, path: string }} file */
+  function shownPath(file) {
+    return file.name || file.path;
+  }
+
+  /** @param {string | null} project */
+  function projectLabel(project) {
+    return project ? `${project}/` : "workspace/";
+  }
+
+  function projectQuery() {
+    return currentProject ? `?project=${encodeURIComponent(currentProject)}` : "";
+  }
+
+  /** The folder on disk of the project in view, once /api/projects has said. */
+  function projectFolder() {
+    if (!currentProject) return projectsInfo.root;
+    return projectsInfo.projects.find((p) => p.name === currentProject)?.folder || "";
+  }
+
+  function renderProject() {
+    const label = projectLabel(currentProject);
+    if (projectName) projectName.textContent = label;
+    if (statProject) statProject.textContent = label;
+    if (headerProject) {
+      headerProject.textContent = label;
+      headerProject.hidden = !currentProject;
+    }
+    if (heroWhere && heroProject) {
+      heroProject.textContent = label;
+      heroWhere.hidden = !currentProject || projectStatus(currentProject) === "missing";
+    }
+    renderProjectMenu();
+  }
+
+  /** Bring `project` into view, as opening one of its chats does.
+   * @param {string | null} project */
+  function showProject(project) {
+    if (project === currentProject) return;
+    currentProject = project;
+    if (project) {
+      localStorage.setItem(PROJECT_KEY, project);
+    } else {
+      localStorage.removeItem(PROJECT_KEY);
+    }
+    renderProject();
+    void loadFiles();
+  }
+
+  async function loadProjects() {
+    try {
+      const res = await fetch("/api/projects");
+      if (!res.ok) return;
+      projectsInfo = await res.json();
+    } catch {
+      return;
+    }
+    if (currentProject && projectStatus(currentProject) === "unknown" && !sessionId) {
+      showProject(null); // gone since it was last in view, chats and all
+      void loadSessions();
+      return;
+    }
+    renderProject();
+    void loadFiles(); // the empty state shows the folder's path
+  }
+
+  /** @param {string} name @returns {"listed" | "hidden" | "missing" | "unknown"} */
+  function projectStatus(name) {
+    const found = projectsInfo.projects.find((p) => p.name === name);
+    if (found) return found.hidden ? "hidden" : "listed";
+    return projectsInfo.missing.includes(name) ? "missing" : "unknown";
+  }
+
+  /** One row of the menu: a project, with a line under its name.
+   * @param {string | null} name @param {string} sub @param {() => void} pick */
+  function projectItem(name, sub, pick) {
+    const li = document.createElement("li");
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "project-item";
+    btn.dataset.project = name ?? "";
+    btn.dataset.label = projectLabel(name);
+    const current = name === currentProject;
+    if (current) btn.setAttribute("aria-current", "true");
+    btn.innerHTML = current ? '<i class="ph ph-check" aria-hidden="true"></i>' : "<span></span>";
+    const label = document.createElement("span");
+    label.className = "project-item-name";
+    label.textContent = projectLabel(name);
+    if (sub) {
+      const line = document.createElement("span");
+      line.className = "project-item-sub";
+      line.textContent = sub;
+      label.append(line);
+    }
+    // Under the name, so a narrow rail never cuts the name short.
+    const state = document.createElement("span");
+    state.className = "project-item-state";
+    label.append(state);
+    btn.append(label);
+    btn.addEventListener("click", pick);
+    li.append(btn);
+    return li;
+  }
+
+  function renderProjectMenu() {
+    if (!projectList) return;
+    // Redrawn while open when the list arrives: keep keyboard focus in place.
+    const focused = /** @type {HTMLElement | null} */ (projectList.querySelector(":focus"));
+    const focusedProject = focused?.dataset.project;
+    const rows = [projectItem(null, "Files outside any project", () => switchProject(null))];
+    const hidden = projectsInfo.projects.filter((p) => p.hidden && p.name !== currentProject);
+    for (const p of projectsInfo.projects) {
+      if (p.hidden && p.name !== currentProject) continue;
+      if (p.hidden) {
+        rows.push(projectItem(p.name, "Hidden: picking it lists it again", () => void unhideProject(p.name)));
+      } else {
+        rows.push(projectItem(p.name, "", () => switchProject(p.name)));
+      }
+    }
+    for (const name of projectsInfo.missing) {
+      rows.push(projectItem(name, "Folder missing: its chats can still be read", () => switchProject(name)));
+    }
+    if (hidden.length && showHidden) {
+      for (const p of hidden) {
+        rows.push(projectItem(p.name, "Hidden: picking it lists it again", () => void unhideProject(p.name)));
+      }
+    } else if (hidden.length) {
+      const li = document.createElement("li");
+      const more = document.createElement("button");
+      more.type = "button";
+      more.className = "project-item project-action";
+      more.innerHTML = '<i class="ph ph-eye" aria-hidden="true"></i>';
+      const text = document.createElement("span");
+      text.textContent = `Show ${hidden.length} hidden`;
+      more.append(text);
+      more.addEventListener("click", () => {
+        showHidden = true;
+        renderProjectMenu();
+        /** @type {HTMLElement | null} */ (projectList.querySelector(`[data-project="${CSS.escape(hidden[0].name)}"]`))?.focus();
+      });
+      li.append(more);
+      rows.push(li);
+    }
+    projectList.replaceChildren(...rows);
+    for (const btn of projectList.querySelectorAll("[data-project]")) {
+      if (/** @type {HTMLElement} */ (btn).dataset.project === focusedProject) /** @type {HTMLElement} */ (btn).focus();
+    }
+    // Rename and hide act on the project in view, while its folder is there.
+    const manageable = currentProject !== null && ["listed", "hidden"].includes(projectStatus(currentProject));
+    if (projectRenameBtn) projectRenameBtn.hidden = !manageable || !projectNewForm?.hidden;
+    if (projectHideBtn) {
+      projectHideBtn.hidden = !manageable || !projectNewForm?.hidden || projectStatus(currentProject ?? "") === "hidden";
+    }
+    paintActivity();
+  }
+
+  function openProjectMenu() {
+    if (!projectMenu || !projectButton || !projectList) return;
+    showHidden = false;
+    renderProjectMenu();
+    void loadProjects(); // folders may have been added on disk
+    projectMenu.hidden = false;
+    projectButton.setAttribute("aria-expanded", "true");
+    const target = projectList.querySelector('[aria-current="true"]') || projectList.querySelector("button");
+    /** @type {HTMLElement | null} */ (target)?.focus();
+  }
+
+  /** @param {{ focus?: boolean }} [opts] */
+  function closeProjectMenu(opts = {}) {
+    if (!projectMenu || !projectButton || projectMenu.hidden) return;
+    projectMenu.hidden = true;
+    projectButton.setAttribute("aria-expanded", "false");
+    hideProjectForm();
+    if (opts.focus) projectButton.focus();
+  }
+
+  /** Switch to `project` and start a new chat there. A chat still working
+   * elsewhere carries on, and its project's rail shows it.
+   * @param {string | null} project */
+  function switchProject(project) {
+    closeProjectMenu({ focus: false });
+    if (project === currentProject) return;
+    showProject(project);
+    resetChat();
+    question.focus();
+  }
+
+  /** The folder name the server will make from what's typed (app/projects.py).
+   * @param {string} title */
+  function folderNameFor(title) {
+    return title
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 64)
+      .replace(/-+$/, "");
+  }
+
+  /** @param {string} message */
+  function showProjectError(message) {
+    if (!projectError) return;
+    projectError.textContent = message;
+    projectError.hidden = false;
+  }
+
+  /** @param {string} name @param {{ name?: string, hidden?: boolean }} change */
+  async function changeProject(name, change) {
+    try {
+      const res = await fetch(`/api/projects/${encodeURIComponent(name)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(change),
+      });
+      if (!res.ok) {
+        showProjectError(await responseDetail(res));
+        return null;
+      }
+      return /** @type {{ name: string }} */ (await res.json());
+    } catch {
+      showProjectError("Could not change the project. Is Humphrey still running?");
+      return null;
+    }
+  }
+
+  /** @param {string} name */
+  async function unhideProject(name) {
+    if (!(await changeProject(name, { hidden: false }))) return;
+    await loadProjects();
+    if (name === currentProject) {
+      closeProjectMenu({ focus: true });
+      showToast(`${projectLabel(name)} is listed again`);
+    } else {
+      switchProject(name);
+    }
+  }
+
+  /** The New project form, also used to rename the project in view.
+   * @param {"new" | "rename"} mode */
+  function showProjectForm(mode) {
+    if (!projectNewForm || !projectNewName) return;
+    projectFormMode = mode;
+    for (const btn of [projectNewBtn, projectRenameBtn, projectHideBtn]) {
+      if (btn) btn.hidden = true;
+    }
+    projectNewForm.hidden = false;
+    if (projectFormLabel) projectFormLabel.textContent = mode === "new" ? "Project name" : "New name";
+    if (projectFormSubmit) projectFormSubmit.textContent = mode === "new" ? "Create" : "Rename";
+    projectNewName.value = mode === "rename" ? currentProject ?? "" : "";
+    if (projectWillBe) projectWillBe.textContent = "";
+    if (projectError) projectError.hidden = true;
+    projectNewName.focus();
+    projectNewName.select();
+  }
+
+  function hideProjectForm() {
+    if (!projectNewForm || !projectNewBtn) return;
+    projectNewForm.hidden = true;
+    projectNewBtn.hidden = false;
+    if (projectError) projectError.hidden = true;
+    renderProjectMenu(); // brings back Rename and Hide where they apply
+  }
+
+  projectButton?.addEventListener("click", () => {
+    if (projectMenu?.hidden) {
+      openProjectMenu();
+    } else {
+      closeProjectMenu({ focus: true });
+    }
+  });
+
+  projectNewBtn?.addEventListener("click", () => showProjectForm("new"));
+  projectRenameBtn?.addEventListener("click", () => showProjectForm("rename"));
+
+  projectHideBtn?.addEventListener("click", async () => {
+    const name = currentProject;
+    if (!name || !(await changeProject(name, { hidden: true }))) return;
+    await loadProjects();
+    switchProject(null);
+    showToast(`Hid ${projectLabel(name)}. Its folder and chats are kept; "Show hidden" lists it again.`);
+  });
+
+  projectNewName?.addEventListener("input", () => {
+    const name = folderNameFor(projectNewName.value);
+    const verb = projectFormMode === "new" ? "Creates" : "Renames it to";
+    const unchanged = projectFormMode === "rename" && name === currentProject;
+    if (projectWillBe) projectWillBe.textContent = name && !unchanged ? `${verb} projects/${name}/` : "";
+    if (projectError) projectError.hidden = true;
+  });
+
+  document.getElementById("project-new-cancel")?.addEventListener("click", () => {
+    hideProjectForm();
+    projectNewBtn?.focus();
+  });
+
+  projectNewForm?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!projectNewName) return;
+    if (projectFormMode === "rename") {
+      const from = currentProject;
+      if (!from) return;
+      const renamed = await changeProject(from, { name: projectNewName.value });
+      if (!renamed) return;
+      await loadProjects();
+      closeProjectMenu({ focus: false });
+      showProject(renamed.name);
+      void loadSessions();
+      // The open chat's artefacts are served from the new folder now.
+      if (sessionId) void openSession(sessionId, { silent: true });
+      if (renamed.name !== from) showToast(`Renamed to ${projectLabel(renamed.name)}`);
+      return;
+    }
+    try {
+      const res = await fetch("/api/projects", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: projectNewName.value }),
+      });
+      if (!res.ok) {
+        showProjectError(await responseDetail(res));
+        return;
+      }
+      const made = await res.json();
+      await loadProjects();
+      switchProject(made.name);
+      showToast(`Made ${projectLabel(made.name)}`);
+    } catch {
+      showProjectError("Could not make the project. Is Humphrey still running?");
+    }
+  });
+
+  projectMenu?.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      closeProjectMenu({ focus: true });
+      return;
+    }
+    if (event.target instanceof HTMLInputElement) return;
+    const items = /** @type {HTMLElement[]} */ (
+      [...projectMenu.querySelectorAll(".project-item")].filter((el) => !(/** @type {HTMLElement} */ (el).hidden))
+    );
+    // Typing jumps to the project whose name starts with what's typed.
+    if (event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      typed = (Date.now() - typedAt < 800 ? typed : "") + event.key.toLowerCase();
+      typedAt = Date.now();
+      items.find((el) => (el.dataset.label || "").toLowerCase().startsWith(typed))?.focus();
+      event.preventDefault();
+      return;
+    }
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    const at = items.indexOf(/** @type {HTMLElement} */ (document.activeElement));
+    const step = event.key === "ArrowDown" ? 1 : -1;
+    items[(at + step + items.length) % items.length]?.focus();
+    event.preventDefault();
+  });
+
+  document.addEventListener("pointerdown", (event) => {
+    const switcher = document.getElementById("project-switcher");
+    if (switcher && event.target instanceof Node && !switcher.contains(event.target)) {
+      closeProjectMenu({ focus: false });
+    }
+  });
+
+  // Activity (/api/activity): which chats have a turn under way, in every
+  // project. The chat this tab follows shows its own run; the rest come
+  // from here, so the rail can mark a chat working or waiting on you
+  // anywhere, including ones another tab started.
+  const ACTIVITY_MS = 4000;
+  const projectNeeds = document.getElementById("project-needs");
+  const railNeeds = document.getElementById("rail-needs");
+  /** @type {{ session_id: string, project: string | null, state: "working" | "needs_you" }[]} */
+  let activity = [];
+
+  async function loadActivity() {
+    let next;
+    try {
+      const res = await fetch("/api/activity");
+      if (!res.ok) return;
+      next = await res.json();
+    } catch {
+      return;
+    }
+    const ended = activity.some(
+      (a) => a.project === currentProject && !next.some((n) => n.session_id === a.session_id),
+    );
+    const listed = (/** @type {string} */ id) =>
+      Boolean(sessionList?.querySelector(`[data-session-id="${CSS.escape(id)}"]`));
+    const unlisted = next.some((/** @type {any} */ a) => a.project === currentProject && !listed(a.session_id));
+    activity = next;
+    paintActivity();
+    // A chat that ended has a new title and time; a new one in its first
+    // turn isn't in the list yet.
+    if (ended || unlisted) void loadSessions();
+  }
+
+  /** @param {string | null} project */
+  function projectState(project) {
+    const mine = activity.filter((a) => a.project === project);
+    if (mine.some((a) => a.state === "needs_you")) return "needs_you";
+    return mine.length ? "working" : null;
+  }
+
+  /** @param {HTMLElement | null} badge @param {number} count @param {string} what */
+  function setNeedsBadge(badge, count, what) {
+    if (!badge) return;
+    badge.hidden = count === 0;
+    badge.textContent = String(count);
+    badge.title = `${count} ${count === 1 ? "chat needs" : "chats need"} you ${what}`;
+  }
+
+  function paintActivity() {
+    for (const row of document.querySelectorAll("#session-list .session-item[data-session-id]")) {
+      const el = /** @type {HTMLElement} */ (row);
+      const state = activity.find((a) => a.session_id === el.dataset.sessionId)?.state;
+      const meta = /** @type {HTMLElement | null} */ (el.querySelector(".session-meta"));
+      if (state) {
+        el.dataset.state = state;
+      } else {
+        delete el.dataset.state;
+      }
+      if (meta) {
+        meta.textContent = state === "needs_you" ? "needs you" : state === "working" ? "working" : meta.dataset.time || "";
+      }
+    }
+    for (const item of document.querySelectorAll("#project-list .project-item")) {
+      const el = /** @type {HTMLElement} */ (item);
+      const slot = /** @type {HTMLElement | null} */ (el.querySelector(".project-item-state"));
+      if (!slot) continue;
+      const state = projectState(el.dataset.project || null);
+      slot.dataset.state = state || "";
+      slot.textContent = state === "needs_you" ? "needs you" : state === "working" ? "working" : "";
+    }
+    const waiting = activity.filter((a) => a.state === "needs_you");
+    setNeedsBadge(projectNeeds, waiting.filter((a) => a.project !== currentProject).length, "in other projects");
+    // The collapsed rail hides every row, so it counts all but the open chat.
+    setNeedsBadge(railNeeds, waiting.filter((a) => a.session_id !== sessionId).length, "elsewhere");
+  }
+
+  setInterval(() => {
+    if (!document.hidden) void loadActivity();
+  }, ACTIVITY_MS);
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) void loadActivity();
+  });
 
   /** Mermaid theme from the live CSS tokens, so diagrams follow light/dark. */
   function mermaidTheme() {
@@ -3016,13 +3539,15 @@
     if (!sessionList) {
       return;
     }
+    const project = currentProject;
     try {
-      const res = await fetch("/api/sessions");
+      const res = await fetch(`/api/sessions${projectQuery()}`);
       if (!res.ok) {
         return;
       }
       /** @type {{ id: string, title?: string, message_count?: number, updated_at?: string }[]} */
       const rows = await res.json();
+      if (project !== currentProject) return; // a switch overtook this answer
       sessionList.replaceChildren();
       if (sessionsCount) {
         if (rows.length) {
@@ -3035,7 +3560,7 @@
       if (!rows.length) {
         const empty = document.createElement("li");
         empty.className = "session-empty";
-        empty.textContent = "No recent chats";
+        empty.textContent = "No chats yet";
         sessionList.append(empty);
         return;
       }
@@ -3053,6 +3578,8 @@
         const meta = document.createElement("span");
         meta.className = "session-meta";
         meta.textContent = relativeTime(row.updated_at) || "Saved";
+        meta.dataset.time = meta.textContent;
+        btn.dataset.sessionId = row.id;
         btn.append(title, meta);
         btn.addEventListener("click", () => {
           void openSession(row.id);
@@ -3060,6 +3587,7 @@
         li.append(btn);
         sessionList.append(li);
       }
+      paintActivity();
     } catch {
       /* ignore */
     }
@@ -3085,6 +3613,7 @@
         return;
       }
       const data = await res.json();
+      showProject(typeof data.project === "string" ? data.project : null);
       const rows = (data.messages || []).filter(
         (m) => m && (m.content || m.role === "tool" || (Array.isArray(m.images) && m.images.length > 0)),
       );
@@ -3358,6 +3887,7 @@
 
     if (type === "ui_request" && event.kind === "question") {
       showAsk(event, state);
+      void loadActivity();
       return;
     }
 
@@ -3368,6 +3898,7 @@
       }
       setRunning(true);
       ensureThought(state);
+      void loadActivity();
       return;
     }
 
@@ -3658,6 +4189,8 @@
               ...(pushedMessage.images ? { images: pushedMessage.images } : {}),
             },
             session_id: sessionId,
+            // Only a new chat uses this; an existing one keeps its own project.
+            ...(currentProject ? { project: currentProject } : {}),
             ...(selectedModel ? { model: selectedModel } : {}),
             ...(selectedEffort ? { reasoning_effort: selectedEffort } : {}),
           }),
@@ -3764,6 +4297,7 @@
         settleThought(state);
         setRunning(false);
         void loadSessions();
+        void loadActivity();
         question.focus();
         void drainQueue();
       }
@@ -3916,6 +4450,9 @@
   updateStats();
   updateLatestButton();
   setRunning(false);
+  renderProject();
+  void loadProjects();
+  void loadActivity();
   void probeHealth();
   void loadSessions();
   void restoreSession().then(() => {

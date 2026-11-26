@@ -42,7 +42,8 @@ from app.image_processing import (
     process_image,
 )
 from app.rendering.sse import SseRenderer, encode_sse
-from app import runs
+from app import projects, runs
+from app.projects import ProjectError, ProjectExists
 from app.runs import FrameLog, Run
 from app.skills import SkillError, expand_skill_command, load_skills
 from app.sessions import (
@@ -55,7 +56,7 @@ from app.sessions import (
 from app.settings import DEFAULT_CONTEXT_WINDOW_TOKENS, get_settings
 from app.tools import TOOLS, WORKSPACE_DIR, tools_for_run
 from app.ui_bridge import WebUiBridge
-from brain.events import ToolExecutionEndEvent
+from brain.events import ToolExecutionEndEvent, ToolExecutionStartEvent
 from brain.messages import AgentMessage, AssistantMessage, ImageContent, TextContent, UserMessage
 
 logger = logging.getLogger(__name__)
@@ -116,6 +117,9 @@ class AgentRequest(BaseModel):
     # Per-request reasoning effort; one the model offers in /api/models.
     # Omit for REASONING_EFFORT.
     reasoning_effort: str | None = Field(default=None, max_length=20)
+    # The project a new chat works in (/api/projects); omit for the default.
+    # An existing chat keeps its own, whatever this says.
+    project: str | None = Field(default=None, max_length=100)
 
 
 class QueueRequest(BaseModel):
@@ -149,6 +153,7 @@ class SessionOut(BaseModel):
     created_at: str
     updated_at: str
     title: str | None = None
+    project: str | None = None
     last_usage: dict[str, int] | None = None
     # Every model call stored in this chat, added up: input, output, and the
     # cached and reasoning parts of each (see providers' usage records).
@@ -162,6 +167,14 @@ class SessionSummaryOut(BaseModel):
     updated_at: str
     title: str | None
     message_count: int
+
+
+class ActivityOut(BaseModel):
+    """A chat with a turn under way: working, or waiting on the person."""
+
+    session_id: str
+    project: str | None
+    state: Literal["working", "needs_you"]
 
 
 class ModelsOut(BaseModel):
@@ -213,6 +226,34 @@ class UiAnswerRequest(BaseModel):
     answers: dict[str, QuestionAnswerIn] | None = Field(default=None, max_length=4)
     skipped: bool = False
     reply: str | None = Field(default=None, max_length=8000)
+
+
+class ProjectOut(BaseModel):
+    name: str
+    # Where it is on disk, so the person can put their own files in it.
+    folder: str
+    # Left out of the switcher's list until it's picked again.
+    hidden: bool = False
+
+
+class ProjectsOut(BaseModel):
+    # The default project's folder: the workspace itself.
+    root: str
+    projects: list[ProjectOut]
+    # Projects some chat works in whose folder isn't there: renamed or
+    # removed on disk. Their chats can still be read.
+    missing: list[str] = Field(default_factory=list)
+
+
+class ProjectChange(BaseModel):
+    # A new name, as the person typed it; the folder is renamed to match.
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    hidden: bool | None = None
+
+
+class ProjectIn(BaseModel):
+    # As the person typed it; the folder's name is made from it.
+    name: str = Field(..., min_length=1, max_length=200)
 
 
 class QueueOut(BaseModel):
@@ -365,14 +406,19 @@ async def chatgpt_sign_out() -> AuthStatusOut:
 
 
 @app.get("/api/sessions", response_model=list[SessionSummaryOut])
-async def list_sessions() -> list[SessionSummaryOut]:
-    rows = await get_session_store().list_recent(limit=20)
+async def list_sessions(project: str | None = None) -> list[SessionSummaryOut]:
+    """The newest chats in ``project``, or in the default project."""
+    rows = await get_session_store().list_recent(limit=20, project=project)
     listed = {r.id for r in rows}
     # New chats still in their first turn: not stored yet, but they can be
     # left and come back to, so they're listed, newest first, named by
     # their prompt as an unnamed chat would be.
     starting = sorted(
-        (run for run in runs.current() if run.new_chat and not run.saved and run.session_id not in listed),
+        (
+            run
+            for run in runs.current()
+            if run.new_chat and not run.saved and run.project == project and run.session_id not in listed
+        ),
         key=lambda run: run.started_ms,
         reverse=True,
     )
@@ -398,6 +444,18 @@ async def list_sessions() -> list[SessionSummaryOut]:
     ]
 
 
+@app.get("/api/activity", response_model=list[ActivityOut])
+def list_activity() -> list[ActivityOut]:
+    """Every chat with a turn under way, in any project, so the rail can
+    mark chats it isn't following: one in another project waiting on a
+    question, or one another tab started."""
+    return [
+        ActivityOut(session_id=run.session_id, project=run.project, state=state)
+        for run in runs.current()
+        if (state := run.state) is not None
+    ]
+
+
 @app.get("/api/sessions/{session_id}", response_model=SessionOut)
 async def get_session(session_id: str) -> SessionOut:
     if not SAFE_SESSION_ID.match(session_id):
@@ -410,7 +468,8 @@ async def get_session(session_id: str) -> SessionOut:
         run = None
     session = await get_session_store().get(session_id)
     if session is None and run is not None:
-        session = Session(id=session_id)  # a new chat: stored once its first turn is
+        # A new chat: stored once its first turn is, and working in its run's project.
+        session = Session(id=session_id, project=run.project)
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found.")
     rows = session.history_rows()
@@ -448,6 +507,7 @@ async def get_session(session_id: str) -> SessionOut:
         created_at=session.created_at,
         updated_at=session.updated_at,
         title=session.title,
+        project=session.project,
         last_usage=last_usage,
         usage_totals=_usage_totals(messages),
         artifacts=artifacts,
@@ -681,6 +741,15 @@ async def agent(body: AgentRequest) -> StreamingResponse:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     prompt_text = expanded if expanded is not None else latest_user
 
+    project = session.project if existing is not None else body.project
+    try:
+        workdir = projects.folder(WORKSPACE_DIR, project)
+    except ProjectError as exc:
+        if existing is not None:  # its folder was renamed or removed on disk
+            raise HTTPException(status_code=409, detail=f"{exc} Start a new chat to carry on.") from exc
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    session.project = project
+
     # Every check that can reject the request is above this line: the store
     # may hand back the live session, so nothing changes it before here.
     last = session.messages[-1] if session.messages else None
@@ -690,7 +759,7 @@ async def agent(body: AgentRequest) -> StreamingResponse:
     compaction = await compact_if_needed(
         history,
         provider=housekeeping,
-        system=system_prompt(),
+        system=system_prompt(workdir),
         tools=TOOLS,
         context_window_tokens=await context_window_for(provider.deployment_name),
     )
@@ -711,7 +780,11 @@ async def agent(body: AgentRequest) -> StreamingResponse:
     log = FrameLog()
     bridge = WebUiBridge(lambda payload: log.publish(encode_sse({**payload, "session_id": session_id})))
     harness = build_harness(
-        session_id=session_id, provider=provider, messages=history, tools=tools_for_run(bridge)
+        session_id=session_id,
+        provider=provider,
+        messages=history,
+        tools=tools_for_run(bridge, workdir),
+        workspace=workdir,
     )
     # Started here rather than in the task, so the run counts as running
     # from the moment it can be found.
@@ -724,8 +797,9 @@ async def agent(body: AgentRequest) -> StreamingResponse:
         prompt=latest_user,
         started_ms=prompt_message.timestamp_ms,
         new_chat=existing is None,
+        project=project,
     )
-    tracker = ArtifactTracker(WORKSPACE_DIR)
+    tracker = ArtifactTracker(workdir, projects.scan_exclusions(project))
 
     async def run_turn() -> None:
         """Run the turn and save it. Whoever follows the log sees its
@@ -737,8 +811,14 @@ async def agent(body: AgentRequest) -> StreamingResponse:
                 wire = renderer.to_sse(event)
                 if wire is not None:
                     log.publish(wire)
+                if isinstance(event, ToolExecutionStartEvent):
+                    tracker.tool_started(event.tool_name)  # before the tool runs
                 if isinstance(event, ToolExecutionEndEvent):
-                    for artifact in tracker.changes():
+                    made = tracker.tool_finished(event.tool_name, event.result.details, event.is_error)
+                    for artifact in made:
+                        # Shown by its path in the project, served by its path in the workspace.
+                        artifact["name"] = artifact["path"]
+                        artifact["path"] = projects.served_path(project, artifact["name"])
                         artifact["version"] = 1 + sum(
                             1 for a in session.artifacts if a.get("path") == artifact["path"]
                         )
@@ -784,12 +864,103 @@ def _stream(run: Run) -> StreamingResponse:
     )
 
 
+@app.get("/api/projects", response_model=ProjectsOut)
+async def list_projects() -> ProjectsOut:
+    names = projects.list_projects(WORKSPACE_DIR)
+    in_use = await get_session_store().project_names()
+    return ProjectsOut(
+        root=str(WORKSPACE_DIR),
+        projects=[_project_out(name) for name in names],
+        missing=sorted(in_use - set(names)),
+    )
+
+
+def _project_out(name: str) -> ProjectOut:
+    return ProjectOut(
+        name=name,
+        folder=str(projects.folder(WORKSPACE_DIR, name)),
+        hidden=projects.is_hidden(WORKSPACE_DIR, name),
+    )
+
+
+@app.post(
+    "/api/projects",
+    response_model=ProjectOut,
+    status_code=201,
+    dependencies=[Depends(_json_only)],
+)
+def create_project(body: ProjectIn) -> ProjectOut:
+    try:
+        name = projects.create(WORKSPACE_DIR, body.name)
+    except ProjectExists as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ProjectError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return ProjectOut(name=name, folder=str(projects.folder(WORKSPACE_DIR, name)))
+
+
+@app.patch("/api/projects/{name}", response_model=ProjectOut, dependencies=[Depends(_json_only)])
+async def change_project(name: str, body: ProjectChange) -> ProjectOut:
+    """Hide or show a project, or rename it. A rename renames the folder
+    and moves every chat in it along, so none is left naming the old one."""
+    try:
+        projects.folder(WORKSPACE_DIR, name)
+    except ProjectError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if body.hidden is not None:
+        projects.set_hidden(WORKSPACE_DIR, name, body.hidden)
+    if body.name is not None:
+        if any(run.project == name for run in runs.current()):
+            raise HTTPException(
+                status_code=409,
+                detail=f"A chat in {name} still has a turn under way. Rename it once that's done.",
+            )
+        try:
+            renamed = projects.rename(WORKSPACE_DIR, name, body.name)
+        except ProjectExists as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ProjectError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if renamed != name:
+            await _move_chats(name, renamed)
+        name = renamed
+    return _project_out(name)
+
+
+async def _move_chats(old: str, new: str) -> None:
+    """Point every chat in project ``old`` at ``new``, artefacts included.
+    Oldest first, so their order in the list doesn't change."""
+    store = get_session_store()
+    was, now = projects.served_path(old, ""), projects.served_path(new, "")
+    for summary in reversed(await store.list_recent(limit=1_000_000, project=old)):
+        session = await store.get(summary.id)
+        if session is None:
+            continue
+        session.project = new
+        for artifact in session.artifacts:
+            path = artifact.get("path")
+            if isinstance(path, str) and path.startswith(was):
+                artifact["path"] = now + path.removeprefix(was)
+        await store.save(session)
+
+
 @app.get("/api/files")
-def list_files() -> list[dict[str, Any]]:
-    """Workspace files, newest first (capped), for the UI's Files list."""
-    stamps = scan_workspace(WORKSPACE_DIR)
+def list_files(project: str | None = None) -> list[dict[str, Any]]:
+    """A project's files (with no ``project``, the default project's),
+    newest first (capped), for the UI's Files list."""
+    try:
+        workdir = projects.folder(WORKSPACE_DIR, project)
+    except ProjectError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    stamps = scan_workspace(workdir, projects.scan_exclusions(project))
     rows = [
-        {"path": path, "kind": artifact_kind(path), "size": s.size, "mtime": s.mtime_ns // 1_000_000}
+        {
+            "path": projects.served_path(project, path),
+            "name": path,
+            "kind": artifact_kind(path),
+            "size": s.size,
+            "mtime": s.mtime_ns // 1_000_000,
+        }
         for path, s in stamps.items()
     ]
     rows.sort(key=lambda r: r["mtime"], reverse=True)
