@@ -20,6 +20,7 @@ it inline as an artefact.</sub>
 - Rendered Mermaid diagrams
 - Persistent, auto-named sessions with automatic context compaction
 - Projects: a folder for each piece of work, with its own chats and files
+- Background tasks: ask Humphrey to do something in the background, carry on, and get the result when it's ready
 - Runs on OpenAI with an API key or your ChatGPT plan, with an offline mock
   that needs no credentials and an optional Azure OpenAI adapter
 
@@ -141,7 +142,7 @@ gpt-6.1-sol asks the same as gpt-5.6-sol but is safer when you skip a question. 
 
 ## Tools
 
-Humphrey has tau's four coding tools, plus one for asking you questions:
+Humphrey has tau's four coding tools, plus one for asking you questions and two for background tasks:
 
 | Tool | Purpose |
 | --- | --- |
@@ -150,6 +151,8 @@ Humphrey has tau's four coding tools, plus one for asking you questions:
 | `edit` | Exact text replacements in a file (shown as a diff in the UI) |
 | `bash` | Run a shell command |
 | `ask_user_question` | Ask you one to four clarifying questions, each with a few options, and wait for your answer |
+| `start_task` | Hand a job to a background task and carry on (see below) |
+| `get_task_result` | Read a background task's full result |
 
 They work in the chat's project folder: `workspace/` (or
 `HUMPHREY_WORKSPACE`), or one of its projects (see below). Relative paths
@@ -202,6 +205,26 @@ it to undo. Humphrey never deletes a project's folder. If you rename or
 remove one on disk, its chats are listed under "Folder missing": they can
 still be read, and say so if you message them. Typing in the menu jumps to
 a project.
+
+## Background tasks
+
+Ask Humphrey to do something "in the background" and it hands the job to a
+task with its `start_task` tool, then carries on with you. A task is a chat
+of its own, shown under the chat that started it, working in the same
+project. It starts with Humphrey's brief, or as a fork: with a copy of the
+conversation so far, so it knows what's been said. A card follows it in
+your chat (working, needs you, queued, finished), and **Open task** shows
+it in full, to watch it, steer it, answer its questions or stop it.
+
+When a task finishes, its result comes back to your chat as a card, and
+Humphrey replies with it straight away, whether or not you're watching; if
+you're mid-turn, it waits for that turn. A long result isn't cut short:
+Humphrey reads it in full with `get_task_result`. Up to four tasks work at
+once and the rest wait their turn. A task can't start tasks of its own.
+
+This follows [tau-subagents](https://github.com/rian-dolphin/tau-subagents),
+background only. Like runs, tasks live in the server process, so a
+restart loses one that's under way.
 
 ## Artefacts
 

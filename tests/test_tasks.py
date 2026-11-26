@@ -127,6 +127,10 @@ async def test_a_result_joins_the_turn_under_way(client: AsyncClient) -> None:
     started = await _send(client, chat, "ask me in the background")
     task_id = [e for e in _events(started.text) if e["type"] == "tool_end"][0]["task"]["task_id"]
     task_question = await _asking(task_id)
+    # Opened mid-first-turn, before it's stored, it still knows what it is.
+    opened = (await client.get(f"/api/sessions/{task_id}")).json()
+    assert (opened["parent_id"], opened["title"]) == (chat, "Background job")
+    assert opened["run"]["prompt"].startswith("ask me\n\nWhen you're done")
 
     busy = asyncio.create_task(_send(client, chat, "ask me"))
     chat_question = await _asking(chat)

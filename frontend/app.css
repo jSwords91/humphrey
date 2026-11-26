@@ -3345,3 +3345,130 @@ button:active:not(:disabled):not(.latest-btn):not(.btn-send) {
     animation: none !important;
   }
 }
+
+/* Background tasks (app/tasks.py): a card under the start_task call that
+   follows the task, and a card where its result came back. The top edge
+   says the state, as the question card's does: the band while working,
+   Needs-you coral while it waits on an answer, solid tan once it's done. */
+
+.task-card {
+  position: relative;
+  width: 100%;
+  max-width: var(--transcript-max);
+  padding: calc(0.75rem + var(--hb-band-h)) 1rem 0.8rem;
+  background: var(--color-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.task-card::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: var(--hb-band-h);
+  background: var(--color-hairline);
+}
+
+.task-card[data-state="working"]::before {
+  background: var(--hb-band);
+  background-size: 28px 100%;
+  animation: hb-band 1.2s linear infinite;
+}
+
+.task-card[data-state="needs_you"]::before,
+.task-card[data-state="failed"]::before {
+  background: var(--hb-attention);
+}
+
+.task-card[data-state="finished"]::before,
+.task-card[data-state="completed"]::before {
+  background: var(--hb-accent);
+}
+
+.task-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  font-size: var(--fs-xs);
+  color: var(--color-muted);
+}
+
+.task-state::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  vertical-align: 0.1em;
+}
+
+.task-card[data-state="working"] .task-state {
+  color: var(--hb-working-text);
+}
+
+.task-card[data-state="needs_you"] .task-state,
+.task-card[data-state="failed"] .task-state {
+  color: var(--hb-attention-text);
+}
+
+.task-card[data-state="queued"] .task-state {
+  color: var(--hb-queued);
+}
+
+.task-card[data-state="finished"] .task-state,
+.task-card[data-state="completed"] .task-state {
+  color: var(--hb-success);
+}
+
+.task-title {
+  font-weight: var(--fw-medium);
+  color: var(--color-fg);
+}
+
+.task-body {
+  color: var(--color-fg-2);
+  font-size: var(--fs-sm);
+}
+
+.task-body:empty {
+  display: none;
+}
+
+.task-foot {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* A task's chat says which chat started it. */
+.task-origin {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--fs-sm);
+  color: var(--color-muted);
+}
+
+/* In the rail, a chat's tasks sit under it. */
+.session-item.is-task {
+  margin-left: 0.9rem;
+  width: calc(100% - 0.9rem);
+  border-left: 1px solid var(--color-border);
+  border-radius: 0 8px 8px 0;
+}
+
+.session-item.is-task .session-title {
+  font-size: 0.8125rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .task-card[data-state="working"]::before {
+    animation: none;
+  }
+}

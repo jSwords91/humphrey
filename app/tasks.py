@@ -68,9 +68,10 @@ _jobs: set[asyncio.Task[None]] = set()
 _slots: tuple[asyncio.AbstractEventLoop, asyncio.Semaphore] | None = None
 
 
-def queued() -> list[Task]:
-    """Tasks waiting for a slot: they have no run yet to show."""
-    return [t for t in _tasks.values() if t.state == "queued"]
+def unfinished() -> list[Task]:
+    """Tasks not yet done: queued for a slot, or working (with a run, or
+    about to have one)."""
+    return [t for t in _tasks.values() if t.state != "done"]
 
 
 class ChatTasks:
@@ -158,7 +159,7 @@ async def _run(task: Task, prompt: str, seed: list[AgentMessage], model: str | N
             run = await start_turn(
                 task.id,
                 brief,
-                shown=prompt,
+                shown=brief,  # its chat shows what the task was told, as it was told
                 model=model,
                 effort=effort,
                 project=task.project,

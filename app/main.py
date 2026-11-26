@@ -149,6 +149,8 @@ class SessionOut(BaseModel):
     updated_at: str
     title: str | None = None
     project: str | None = None
+    # The chat that started this one as a background task.
+    parent_id: str | None = None
     last_usage: dict[str, int] | None = None
     # Every model call stored in this chat, added up: input, output, and the
     # cached and reasoning parts of each (see providers' usage records).
@@ -450,14 +452,19 @@ def list_activity() -> list[ActivityOut]:
     """Every chat with a turn under way, in any project, so the rail can
     mark chats it isn't following: one in another project waiting on a
     question, or one another tab started."""
-    return [
-        *(
-            ActivityOut(session_id=run.session_id, project=run.project, state=state)
-            for run in runs.current()
-            if (state := run.state) is not None
-        ),
-        *(ActivityOut(session_id=t.id, project=t.project, state="queued") for t in tasks.queued()),
+    found = [
+        ActivityOut(session_id=run.session_id, project=run.project, state=state)
+        for run in runs.current()
+        if (state := run.state) is not None
     ]
+    # A task without a run yet: queued for a slot, or just about to start.
+    with_runs = {a.session_id for a in found}
+    found += [
+        ActivityOut(session_id=t.id, project=t.project, state="queued" if t.state == "queued" else "working")
+        for t in tasks.unfinished()
+        if t.id not in with_runs
+    ]
+    return found
 
 
 @app.get("/api/sessions/{session_id}", response_model=SessionOut)
@@ -472,8 +479,9 @@ async def get_session(session_id: str) -> SessionOut:
         run = None
     session = await get_session_store().get(session_id)
     if session is None and run is not None:
-        # A new chat: stored once its first turn is, and working in its run's project.
-        session = Session(id=session_id, project=run.project)
+        # A new chat: stored once its first turn is. What it already is comes
+        # from its run: its project, and for a task, its parent and title.
+        session = Session(id=session_id, project=run.project, parent_id=run.parent_id, title=run.title)
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found.")
     rows = session.history_rows()
@@ -513,6 +521,7 @@ async def get_session(session_id: str) -> SessionOut:
         updated_at=session.updated_at,
         title=session.title,
         project=session.project,
+        parent_id=session.parent_id,
         last_usage=last_usage,
         usage_totals=_usage_totals(messages),
         artifacts=artifacts,
