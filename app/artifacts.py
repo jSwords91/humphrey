@@ -1,9 +1,9 @@
 """Artefacts: files the agent creates or changes in the workspace.
 
-After every tool call the workspace is compared with the previous scan, so a
-file counts whether it came from ``write``/``edit`` or from a ``bash`` command
-(e.g. a script that saves a chart). Each change becomes an artefact the UI
-renders inline, and files are served back through ``resolve_workspace_file``,
+A file counts whether it came from ``write``/``edit`` (the file they name)
+or from a ``bash`` command, such as a script that saves a chart (what
+changed while the command ran). Each becomes an artefact the UI renders
+inline, and files are served back through ``resolve_workspace_file``,
 which never lets a path escape the workspace.
 """
 
@@ -66,28 +66,64 @@ def scan_workspace(root: Path) -> dict[str, FileStamp]:
     return stamps
 
 
+# How each tool changes the workspace. write and edit change the one file
+# they name; a bash command may change anything; the rest change nothing.
+# A new tool that writes files belongs in one of these.
+NAMING_TOOLS = frozenset({"write", "edit"})
+COMMAND_TOOLS = frozenset({"bash"})
+
+
 class ArtifactTracker:
-    """Reports files created or modified since the previous ``changes()`` call."""
+    """The files one run creates or changes: the file each of its write and
+    edit calls names, and what changes while each of its bash commands runs.
+
+    Several chats can work at once, so a change between this run's tool
+    calls may be another chat's (or the person's own) and isn't counted.
+    A file another chat writes while this run's command runs still is: only
+    separate folders tell those apart.
+    """
 
     def __init__(self, root: Path) -> None:
-        self._root = root
-        self._last = scan_workspace(root)
+        self._root = root.resolve()
+        self._before: dict[str, FileStamp] | None = None
 
-    def changes(self) -> list[dict[str, object]]:
-        current = scan_workspace(self._root)
-        changed = sorted(path for path, stamp in current.items() if self._last.get(path) != stamp)
-        self._last = current
-        now_ms = int(time.time() * 1000)
-        return [
-            {
-                "path": path,
-                "kind": artifact_kind(path),
-                "size": current[path].size,
-                "mtime": current[path].mtime_ns // 1_000_000,
-                "created_ms": now_ms,
-            }
-            for path in changed
-        ]
+    def tool_started(self, tool_name: str) -> None:
+        if tool_name in COMMAND_TOOLS:
+            self._before = scan_workspace(self._root)
+
+    def tool_finished(self, tool_name: str, details: object, is_error: bool) -> list[dict[str, object]]:
+        if tool_name in NAMING_TOOLS and not is_error:
+            return self._named(details)
+        if tool_name in COMMAND_TOOLS and self._before is not None:
+            before, self._before = self._before, None
+            current = scan_workspace(self._root)
+            changed = sorted(path for path, stamp in current.items() if before.get(path) != stamp)
+            return [_artifact(path, current[path]) for path in changed]
+        return []
+
+    def _named(self, details: object) -> list[dict[str, object]]:
+        path = details.get("path") if isinstance(details, dict) else None
+        if not isinstance(path, str):
+            return []
+        try:
+            full = Path(path).resolve()
+            rel = full.relative_to(self._root).as_posix()
+            stat = full.stat()
+        except (OSError, ValueError):
+            return []
+        if any(part in IGNORED_DIRS or part.startswith(".") for part in rel.split("/")):
+            return []  # scan_workspace leaves these out too
+        return [_artifact(rel, FileStamp(stat.st_mtime_ns, stat.st_size))]
+
+
+def _artifact(path: str, stamp: FileStamp) -> dict[str, object]:
+    return {
+        "path": path,
+        "kind": artifact_kind(path),
+        "size": stamp.size,
+        "mtime": stamp.mtime_ns // 1_000_000,
+        "created_ms": int(time.time() * 1000),
+    }
 
 
 def resolve_workspace_file(root: Path, rel_path: str) -> Path | None:

@@ -246,6 +246,29 @@ async def test_reopening_while_the_turn_saves_counts_its_usage_once(client: Asyn
 
 
 @pytest.mark.asyncio
+async def test_a_file_another_chat_writes_is_not_this_chats_artefact(client: AsyncClient) -> None:
+    """Found once runs outlived the page: two chats can work at once, and a
+    chat's artefacts came from comparing the whole workspace after each of
+    its tools, so a file the other chat wrote while this one waited on a
+    question became this chat's too."""
+    waiting = uuid.uuid4().hex
+    request = _start(client, waiting)
+    request_id = await _asking(waiting)
+
+    writer = uuid.uuid4().hex
+    await client.post("/api/agent", json={"message": {"content": "write a note"}, "session_id": writer})
+    await _ended(writer)
+
+    await client.post(f"/api/sessions/{waiting}/ui/{request_id}", json=ANSWER)
+    await request
+    await _ended(waiting)
+    wrote = (await client.get(f"/api/sessions/{writer}")).json()["artifacts"]
+    asked = (await client.get(f"/api/sessions/{waiting}")).json()["artifacts"]
+    assert [a["path"] for a in wrote] == ["notes.md"]
+    assert asked == []
+
+
+@pytest.mark.asyncio
 async def test_a_late_follower_gets_every_frame_then_the_live_ones() -> None:
     log = FrameLog()
     log.publish("one")

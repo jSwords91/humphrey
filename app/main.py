@@ -55,7 +55,7 @@ from app.sessions import (
 from app.settings import DEFAULT_CONTEXT_WINDOW_TOKENS, get_settings
 from app.tools import TOOLS, WORKSPACE_DIR, tools_for_run
 from app.ui_bridge import WebUiBridge
-from brain.events import ToolExecutionEndEvent
+from brain.events import ToolExecutionEndEvent, ToolExecutionStartEvent
 from brain.messages import AgentMessage, AssistantMessage, ImageContent, TextContent, UserMessage
 
 logger = logging.getLogger(__name__)
@@ -737,8 +737,11 @@ async def agent(body: AgentRequest) -> StreamingResponse:
                 wire = renderer.to_sse(event)
                 if wire is not None:
                     log.publish(wire)
+                if isinstance(event, ToolExecutionStartEvent):
+                    tracker.tool_started(event.tool_name)  # before the tool runs
                 if isinstance(event, ToolExecutionEndEvent):
-                    for artifact in tracker.changes():
+                    made = tracker.tool_finished(event.tool_name, event.result.details, event.is_error)
+                    for artifact in made:
                         artifact["version"] = 1 + sum(
                             1 for a in session.artifacts if a.get("path") == artifact["path"]
                         )
