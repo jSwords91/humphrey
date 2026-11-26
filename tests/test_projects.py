@@ -162,3 +162,101 @@ async def test_a_chat_whose_folder_went_says_so(client: AsyncClient) -> None:
     assert "new chat" in again.json()["detail"]
     reopened = await client.get(f"/api/sessions/{session_id}")
     assert reopened.status_code == 200  # still readable
+
+
+async def _project_with_a_note(client: AsyncClient) -> tuple[str, str]:
+    name = (await client.post("/api/projects", json={"name": _unique()})).json()["name"]
+    session_id = uuid.uuid4().hex
+    await client.post(
+        "/api/agent", json={"message": {"content": "write a note"}, "session_id": session_id, "project": name}
+    )
+    return name, session_id
+
+
+@pytest.mark.asyncio
+async def test_renaming_a_project_moves_its_folder_and_its_chats(client: AsyncClient) -> None:
+    old, session_id = await _project_with_a_note(client)
+    title = _unique("Renamed")
+
+    renamed = await client.patch(f"/api/projects/{old}", json={"name": title})
+    assert renamed.status_code == 200
+    new = renamed.json()["name"]
+    assert not (WORKSPACE_DIR / "projects" / old).exists()
+    assert (WORKSPACE_DIR / "projects" / new / "notes.md").is_file()
+
+    chat = (await client.get(f"/api/sessions/{session_id}")).json()
+    assert chat["project"] == new
+    [artifact] = chat["artifacts"]
+    assert artifact["path"] == f"projects/{new}/notes.md"
+    assert (await client.get(f"/api/files/{artifact['path']}")).status_code == 200
+    assert [r["id"] for r in (await client.get("/api/sessions", params={"project": new})).json()] == [session_id]
+    assert old not in (await client.get("/api/projects")).json()["missing"]
+
+    # And the chat carries on there.
+    again = await client.post("/api/agent", json={"message": {"content": "list files"}, "session_id": session_id})
+    assert again.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_a_project_is_not_renamed_under_a_working_chat(client: AsyncClient) -> None:
+    name = (await client.post("/api/projects", json={"name": _unique()})).json()["name"]
+    session_id = uuid.uuid4().hex
+    request = asyncio.create_task(
+        client.post(
+            "/api/agent", json={"message": {"content": "ask me"}, "session_id": session_id, "project": name}
+        )
+    )
+    for _ in range(500):
+        run = runs.get(session_id)
+        if run is not None and run.bridge.waiting:
+            break
+        await asyncio.sleep(0.01)
+
+    refused = await client.patch(f"/api/projects/{name}", json={"name": _unique()})
+    assert refused.status_code == 409
+    assert (WORKSPACE_DIR / "projects" / name).is_dir()
+    await client.post(f"/api/sessions/{session_id}/stop", json={})
+    await request
+
+
+@pytest.mark.asyncio
+async def test_a_rename_needs_a_free_name_and_an_existing_project(client: AsyncClient) -> None:
+    taken = (await client.post("/api/projects", json={"name": _unique()})).json()["name"]
+    name = (await client.post("/api/projects", json={"name": _unique()})).json()["name"]
+    assert (await client.patch(f"/api/projects/{name}", json={"name": taken})).status_code == 409
+    assert (await client.patch(f"/api/projects/{name}", json={"name": "!!"})).status_code == 422
+    assert (await client.patch("/api/projects/no-such-project", json={"hidden": True})).status_code == 404
+    plain = await client.patch(
+        f"/api/projects/{name}", content='{"hidden": true}', headers={"content-type": "text/plain"}
+    )
+    assert plain.status_code == 415
+
+
+@pytest.mark.asyncio
+async def test_hiding_a_project_keeps_its_folder_and_chats(client: AsyncClient) -> None:
+    name, session_id = await _project_with_a_note(client)
+
+    hidden = await client.patch(f"/api/projects/{name}", json={"hidden": True})
+    assert hidden.json()["hidden"] is True
+    marker = WORKSPACE_DIR / "projects" / name / projects.HIDDEN_MARKER
+    assert "Delete the file" in marker.read_text()
+    [listed] = [p for p in (await client.get("/api/projects")).json()["projects"] if p["name"] == name]
+    assert listed["hidden"] is True
+    assert [f["name"] for f in (await client.get("/api/files", params={"project": name})).json()] == ["notes.md"]
+    again = await client.post("/api/agent", json={"message": {"content": "hello"}, "session_id": session_id})
+    assert again.status_code == 200
+
+    shown = await client.patch(f"/api/projects/{name}", json={"hidden": False})
+    assert shown.json()["hidden"] is False
+    assert not marker.exists()
+
+
+@pytest.mark.asyncio
+async def test_a_project_whose_folder_went_is_listed_as_missing(client: AsyncClient) -> None:
+    name, session_id = await _project_with_a_note(client)
+    shutil.rmtree(WORKSPACE_DIR / "projects" / name)
+
+    listed = (await client.get("/api/projects")).json()
+    assert name in listed["missing"]
+    assert name not in [p["name"] for p in listed["projects"]]
+    assert [r["id"] for r in (await client.get("/api/sessions", params={"project": name})).json()] == [session_id]

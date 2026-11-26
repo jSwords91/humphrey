@@ -249,6 +249,28 @@ async def test_the_session_list_is_one_projects(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_the_projects_chats_name_follow_their_saves(tmp_path: Path) -> None:
+    """Read from every summary once, then kept current by save(): a chat
+    moved to another project no longer counts for the old one."""
+    store, backing = _store(tmp_path)
+    await store.save(Session(id="projectchat00001", project="q3-sales"))
+    await store.save(Session(id="projectchat00002", project="q3-sales"))
+    await store.save(Session(id="projectchat00003"))
+    assert await store.project_names() == {"q3-sales"}
+
+    backing.gets.clear()
+    moved = await store.get("projectchat00001")
+    moved.project = "q3-board"
+    await store.save(moved)
+    assert await store.project_names() == {"q3-sales", "q3-board"}
+    other = await store.get("projectchat00002")
+    other.project = "q3-board"
+    await store.save(other)
+    assert await store.project_names() == {"q3-board"}
+    assert not [k for k in backing.gets if k.startswith("sessions-summaries/")]  # no rereads
+
+
+@pytest.mark.asyncio
 async def test_stray_objects_do_not_take_the_list_slots(tmp_path: Path) -> None:
     """The list used to take the newest keys first and filter after, so a
     stray object could push a real session out of it."""

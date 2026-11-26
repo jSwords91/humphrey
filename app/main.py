@@ -232,12 +232,23 @@ class ProjectOut(BaseModel):
     name: str
     # Where it is on disk, so the person can put their own files in it.
     folder: str
+    # Left out of the switcher's list until it's picked again.
+    hidden: bool = False
 
 
 class ProjectsOut(BaseModel):
     # The default project's folder: the workspace itself.
     root: str
     projects: list[ProjectOut]
+    # Projects some chat works in whose folder isn't there: renamed or
+    # removed on disk. Their chats can still be read.
+    missing: list[str] = Field(default_factory=list)
+
+
+class ProjectChange(BaseModel):
+    # A new name, as the person typed it; the folder is renamed to match.
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    hidden: bool | None = None
 
 
 class ProjectIn(BaseModel):
@@ -853,13 +864,21 @@ def _stream(run: Run) -> StreamingResponse:
 
 
 @app.get("/api/projects", response_model=ProjectsOut)
-def list_projects() -> ProjectsOut:
+async def list_projects() -> ProjectsOut:
+    names = projects.list_projects(WORKSPACE_DIR)
+    in_use = await get_session_store().project_names()
     return ProjectsOut(
         root=str(WORKSPACE_DIR),
-        projects=[
-            ProjectOut(name=name, folder=str(projects.folder(WORKSPACE_DIR, name)))
-            for name in projects.list_projects(WORKSPACE_DIR)
-        ],
+        projects=[_project_out(name) for name in names],
+        missing=sorted(in_use - set(names)),
+    )
+
+
+def _project_out(name: str) -> ProjectOut:
+    return ProjectOut(
+        name=name,
+        folder=str(projects.folder(WORKSPACE_DIR, name)),
+        hidden=projects.is_hidden(WORKSPACE_DIR, name),
     )
 
 
@@ -877,6 +896,51 @@ def create_project(body: ProjectIn) -> ProjectOut:
     except ProjectError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return ProjectOut(name=name, folder=str(projects.folder(WORKSPACE_DIR, name)))
+
+
+@app.patch("/api/projects/{name}", response_model=ProjectOut, dependencies=[Depends(_json_only)])
+async def change_project(name: str, body: ProjectChange) -> ProjectOut:
+    """Hide or show a project, or rename it. A rename renames the folder
+    and moves every chat in it along, so none is left naming the old one."""
+    try:
+        projects.folder(WORKSPACE_DIR, name)
+    except ProjectError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if body.hidden is not None:
+        projects.set_hidden(WORKSPACE_DIR, name, body.hidden)
+    if body.name is not None:
+        if any(run.project == name for run in runs.current()):
+            raise HTTPException(
+                status_code=409,
+                detail=f"A chat in {name} still has a turn under way. Rename it once that's done.",
+            )
+        try:
+            renamed = projects.rename(WORKSPACE_DIR, name, body.name)
+        except ProjectExists as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ProjectError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if renamed != name:
+            await _move_chats(name, renamed)
+        name = renamed
+    return _project_out(name)
+
+
+async def _move_chats(old: str, new: str) -> None:
+    """Point every chat in project ``old`` at ``new``, artefacts included.
+    Oldest first, so their order in the list doesn't change."""
+    store = get_session_store()
+    was, now = projects.served_path(old, ""), projects.served_path(new, "")
+    for summary in reversed(await store.list_recent(limit=1_000_000, project=old)):
+        session = await store.get(summary.id)
+        if session is None:
+            continue
+        session.project = new
+        for artifact in session.artifacts:
+            path = artifact.get("path")
+            if isinstance(path, str) and path.startswith(was):
+                artifact["path"] = now + path.removeprefix(was)
+        await store.save(session)
 
 
 @app.get("/api/files")

@@ -227,6 +227,11 @@ class SessionStore(Protocol):
         """The newest ``limit`` chats in ``project`` (None: the default project)."""
         ...
 
+    async def project_names(self) -> set[str]:
+        """Every project some chat works in (the default project left out),
+        so a project whose folder has gone can still be listed."""
+        ...
+
     async def get_image(self, session_id: str, digest: str) -> tuple[bytes, str] | None:
         """The bytes and type of an image the session references, by digest,
         or None if it doesn't reference one (so it serves nothing else)."""
@@ -250,6 +255,9 @@ class MemorySessionStore:
     async def get_image(self, session_id: str, digest: str) -> tuple[bytes, str] | None:
         session = self._sessions.get(session_id)
         return session.find_image(digest) if session is not None else None
+
+    async def project_names(self) -> set[str]:
+        return {s.project for s in self._sessions.values() if s.project is not None}
 
     async def list_recent(self, *, limit: int = 20, project: str | None = None) -> list[SessionSummary]:
         items = sorted(
@@ -294,6 +302,9 @@ class ObjectStoreSessionStore:
         self._settings = settings or get_settings()
         # Digests this process has written or read: re-saving them is skipped.
         self._known_images: set[str] = set()
+        # Each chat's project, read from every summary on first use and kept
+        # up to date by save(), so project_names() doesn't reread them all.
+        self._projects_by_session: dict[str, str | None] | None = None
 
     def _key(self, session_id: str) -> str:
         return f"{self._settings.sessions_prefix}/{session_id}.json"
@@ -348,6 +359,23 @@ class ObjectStoreSessionStore:
         session.updated_at = utc_now()
         session.schema_version = SESSION_SCHEMA_VERSION
         await to_thread(self._save_sync, session.to_dict(), _summary_of(session))
+        if self._projects_by_session is not None:
+            self._projects_by_session[session.id] = session.project
+
+    async def project_names(self) -> set[str]:
+        from asyncio import to_thread
+
+        if self._projects_by_session is None:
+            prefix = f"{self._settings.sessions_prefix}/"
+            index: dict[str, str | None] = {}
+            for meta in await to_thread(self._store.list_keys, prefix):
+                sid = meta.key.removeprefix(prefix).removesuffix(".json")
+                if not SAFE_SESSION_ID.match(sid) or meta.key != self._key(sid):
+                    continue
+                summary = await self._read_summary(sid)
+                index[sid] = summary[2] if summary is not None else None
+            self._projects_by_session = index
+        return {p for p in self._projects_by_session.values() if p is not None}
 
     def _save_sync(self, data: dict[str, Any], summary: dict[str, Any]) -> None:
         # Images first, so a stored session never references a missing image.
@@ -599,6 +627,14 @@ class FallbackSessionStore:
             except Exception as exc:  # noqa: BLE001
                 self._demote(exc)
         return await self._fallback.get_image(session_id, digest)
+
+    async def project_names(self) -> set[str]:
+        if self._primary is not None:
+            try:
+                return await self._primary.project_names()
+            except Exception as exc:  # noqa: BLE001
+                self._demote(exc)
+        return await self._fallback.project_names()
 
     async def list_recent(self, *, limit: int = 20, project: str | None = None) -> list[SessionSummary]:
         if self._primary is not None:
