@@ -63,8 +63,8 @@
    * the rail lists. Null is the default project, the workspace itself.
    * @type {string | null} */
   let currentProject = localStorage.getItem(PROJECT_KEY);
-  /** @type {{ root: string, projects: { name: string, folder: string }[] }} */
-  let projectsInfo = { root: "", projects: [] };
+  /** @type {{ root: string, projects: { name: string, folder: string, hidden: boolean }[], missing: string[] }} */
+  let projectsInfo = { root: "", projects: [], missing: [] };
   /** @type {{ kind: "steer" | "follow-up"; text: string }[]} */
   let queue = [];
   let pinnedToBottom = true;
@@ -1213,9 +1213,14 @@
     const project = currentProject;
     try {
       const res = await fetch(`/api/files${projectQuery()}`);
+      if (project !== currentProject) return; // a switch overtook this answer
+      if (res.status === 404) {
+        filesList.replaceChildren(missingFolderState());
+        return;
+      }
       if (!res.ok) return;
       const files = await res.json();
-      if (project !== currentProject) return; // a switch overtook this answer
+      if (project !== currentProject) return;
       filesList.replaceChildren();
       if (!files.length) {
         filesList.append(filesEmptyState());
@@ -1239,6 +1244,14 @@
     } catch {
       /* the list just stays as it was */
     }
+  }
+
+  /** The project's folder has been renamed or removed on disk. */
+  function missingFolderState() {
+    const li = document.createElement("li");
+    li.className = "files-empty";
+    li.textContent = `Its folder, projects/${currentProject}/, isn't there any more. Its chats can still be read.`;
+    return li;
   }
 
   /** No files yet: say where the person's own files go, ready to copy. */
@@ -1279,6 +1292,17 @@
   const projectList = document.getElementById("project-list");
   const projectName = document.getElementById("project-name");
   const projectNewBtn = document.getElementById("project-new-btn");
+  const projectRenameBtn = document.getElementById("project-rename-btn");
+  const projectHideBtn = document.getElementById("project-hide-btn");
+  const projectFormLabel = document.getElementById("project-form-label");
+  const projectFormSubmit = document.getElementById("project-new-create");
+  /** Whether the menu lists hidden projects, until it next opens. */
+  let showHidden = false;
+  /** @type {"new" | "rename"} */
+  let projectFormMode = "new";
+  // Type-ahead in the menu: what's been typed, and when.
+  let typed = "";
+  let typedAt = 0;
   const projectNewForm = /** @type {HTMLFormElement | null} */ (document.getElementById("project-new-form"));
   const projectNewName = /** @type {HTMLInputElement | null} */ (document.getElementById("project-new-name"));
   const projectWillBe = document.getElementById("project-will-be");
@@ -1319,7 +1343,7 @@
     }
     if (heroWhere && heroProject) {
       heroProject.textContent = label;
-      heroWhere.hidden = !currentProject;
+      heroWhere.hidden = !currentProject || projectStatus(currentProject) === "missing";
     }
     renderProjectMenu();
   }
@@ -1346,9 +1370,8 @@
     } catch {
       return;
     }
-    const known = projectsInfo.projects.some((p) => p.name === currentProject);
-    if (currentProject && !known && !sessionId) {
-      showProject(null); // its folder has gone since it was last in view
+    if (currentProject && projectStatus(currentProject) === "unknown" && !sessionId) {
+      showProject(null); // gone since it was last in view, chats and all
       void loadSessions();
       return;
     }
@@ -1356,45 +1379,99 @@
     void loadFiles(); // the empty state shows the folder's path
   }
 
+  /** @param {string} name @returns {"listed" | "hidden" | "missing" | "unknown"} */
+  function projectStatus(name) {
+    const found = projectsInfo.projects.find((p) => p.name === name);
+    if (found) return found.hidden ? "hidden" : "listed";
+    return projectsInfo.missing.includes(name) ? "missing" : "unknown";
+  }
+
+  /** One row of the menu: a project, with a line under its name.
+   * @param {string | null} name @param {string} sub @param {() => void} pick */
+  function projectItem(name, sub, pick) {
+    const li = document.createElement("li");
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "project-item";
+    btn.dataset.project = name ?? "";
+    btn.dataset.label = projectLabel(name);
+    const current = name === currentProject;
+    if (current) btn.setAttribute("aria-current", "true");
+    btn.innerHTML = current ? '<i class="ph ph-check" aria-hidden="true"></i>' : "<span></span>";
+    const label = document.createElement("span");
+    label.className = "project-item-name";
+    label.textContent = projectLabel(name);
+    if (sub) {
+      const line = document.createElement("span");
+      line.className = "project-item-sub";
+      line.textContent = sub;
+      label.append(line);
+    }
+    // Under the name, so a narrow rail never cuts the name short.
+    const state = document.createElement("span");
+    state.className = "project-item-state";
+    label.append(state);
+    btn.append(label);
+    btn.addEventListener("click", pick);
+    li.append(btn);
+    return li;
+  }
+
   function renderProjectMenu() {
     if (!projectList) return;
     // Redrawn while open when the list arrives: keep keyboard focus in place.
     const focused = /** @type {HTMLElement | null} */ (projectList.querySelector(":focus"));
     const focusedProject = focused?.dataset.project;
-    projectList.replaceChildren();
-    for (const name of [null, ...projectsInfo.projects.map((p) => p.name)]) {
-      const li = document.createElement("li");
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "project-item";
-      btn.dataset.project = name ?? "";
-      const current = name === currentProject;
-      if (current) btn.setAttribute("aria-current", "true");
-      btn.innerHTML = current ? '<i class="ph ph-check" aria-hidden="true"></i>' : "<span></span>";
-      const label = document.createElement("span");
-      label.className = "project-item-name";
-      label.textContent = projectLabel(name);
-      if (name === null) {
-        const sub = document.createElement("span");
-        sub.className = "project-item-sub";
-        sub.textContent = "Files outside any project";
-        label.append(sub);
+    const rows = [projectItem(null, "Files outside any project", () => switchProject(null))];
+    const hidden = projectsInfo.projects.filter((p) => p.hidden && p.name !== currentProject);
+    for (const p of projectsInfo.projects) {
+      if (p.hidden && p.name !== currentProject) continue;
+      if (p.hidden) {
+        rows.push(projectItem(p.name, "Hidden: picking it lists it again", () => void unhideProject(p.name)));
+      } else {
+        rows.push(projectItem(p.name, "", () => switchProject(p.name)));
       }
-      // Under the name, so a narrow rail never cuts the name short.
-      const state = document.createElement("span");
-      state.className = "project-item-state";
-      label.append(state);
-      btn.append(label);
-      btn.addEventListener("click", () => switchProject(name));
-      li.append(btn);
-      projectList.append(li);
-      if (focusedProject === btn.dataset.project) btn.focus();
+    }
+    for (const name of projectsInfo.missing) {
+      rows.push(projectItem(name, "Folder missing: its chats can still be read", () => switchProject(name)));
+    }
+    if (hidden.length && showHidden) {
+      for (const p of hidden) {
+        rows.push(projectItem(p.name, "Hidden: picking it lists it again", () => void unhideProject(p.name)));
+      }
+    } else if (hidden.length) {
+      const li = document.createElement("li");
+      const more = document.createElement("button");
+      more.type = "button";
+      more.className = "project-item project-action";
+      more.innerHTML = '<i class="ph ph-eye" aria-hidden="true"></i>';
+      const text = document.createElement("span");
+      text.textContent = `Show ${hidden.length} hidden`;
+      more.append(text);
+      more.addEventListener("click", () => {
+        showHidden = true;
+        renderProjectMenu();
+        /** @type {HTMLElement | null} */ (projectList.querySelector(`[data-project="${CSS.escape(hidden[0].name)}"]`))?.focus();
+      });
+      li.append(more);
+      rows.push(li);
+    }
+    projectList.replaceChildren(...rows);
+    for (const btn of projectList.querySelectorAll("[data-project]")) {
+      if (/** @type {HTMLElement} */ (btn).dataset.project === focusedProject) /** @type {HTMLElement} */ (btn).focus();
+    }
+    // Rename and hide act on the project in view, while its folder is there.
+    const manageable = currentProject !== null && ["listed", "hidden"].includes(projectStatus(currentProject));
+    if (projectRenameBtn) projectRenameBtn.hidden = !manageable || !projectNewForm?.hidden;
+    if (projectHideBtn) {
+      projectHideBtn.hidden = !manageable || !projectNewForm?.hidden || projectStatus(currentProject ?? "") === "hidden";
     }
     paintActivity();
   }
 
   function openProjectMenu() {
     if (!projectMenu || !projectButton || !projectList) return;
+    showHidden = false;
     renderProjectMenu();
     void loadProjects(); // folders may have been added on disk
     projectMenu.hidden = false;
@@ -1408,7 +1485,7 @@
     if (!projectMenu || !projectButton || projectMenu.hidden) return;
     projectMenu.hidden = true;
     projectButton.setAttribute("aria-expanded", "false");
-    hideNewProjectForm();
+    hideProjectForm();
     if (opts.focus) projectButton.focus();
   }
 
@@ -1434,11 +1511,68 @@
       .replace(/-+$/, "");
   }
 
-  function hideNewProjectForm() {
+  /** @param {string} message */
+  function showProjectError(message) {
+    if (!projectError) return;
+    projectError.textContent = message;
+    projectError.hidden = false;
+  }
+
+  /** @param {string} name @param {{ name?: string, hidden?: boolean }} change */
+  async function changeProject(name, change) {
+    try {
+      const res = await fetch(`/api/projects/${encodeURIComponent(name)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(change),
+      });
+      if (!res.ok) {
+        showProjectError(await responseDetail(res));
+        return null;
+      }
+      return /** @type {{ name: string }} */ (await res.json());
+    } catch {
+      showProjectError("Could not change the project. Is Humphrey still running?");
+      return null;
+    }
+  }
+
+  /** @param {string} name */
+  async function unhideProject(name) {
+    if (!(await changeProject(name, { hidden: false }))) return;
+    await loadProjects();
+    if (name === currentProject) {
+      closeProjectMenu({ focus: true });
+      showToast(`${projectLabel(name)} is listed again`);
+    } else {
+      switchProject(name);
+    }
+  }
+
+  /** The New project form, also used to rename the project in view.
+   * @param {"new" | "rename"} mode */
+  function showProjectForm(mode) {
+    if (!projectNewForm || !projectNewName) return;
+    projectFormMode = mode;
+    for (const btn of [projectNewBtn, projectRenameBtn, projectHideBtn]) {
+      if (btn) btn.hidden = true;
+    }
+    projectNewForm.hidden = false;
+    if (projectFormLabel) projectFormLabel.textContent = mode === "new" ? "Project name" : "New name";
+    if (projectFormSubmit) projectFormSubmit.textContent = mode === "new" ? "Create" : "Rename";
+    projectNewName.value = mode === "rename" ? currentProject ?? "" : "";
+    if (projectWillBe) projectWillBe.textContent = "";
+    if (projectError) projectError.hidden = true;
+    projectNewName.focus();
+    projectNewName.select();
+  }
+
+  function hideProjectForm() {
     if (!projectNewForm || !projectNewBtn) return;
     projectNewForm.hidden = true;
     projectNewBtn.hidden = false;
     if (projectError) projectError.hidden = true;
+    renderProjectMenu(); // brings back Rename and Hide where they apply
   }
 
   projectButton?.addEventListener("click", () => {
@@ -1449,29 +1583,47 @@
     }
   });
 
-  projectNewBtn?.addEventListener("click", () => {
-    if (!projectNewForm || !projectNewName) return;
-    projectNewBtn.hidden = true;
-    projectNewForm.hidden = false;
-    projectNewName.value = "";
-    if (projectWillBe) projectWillBe.textContent = "";
-    projectNewName.focus();
+  projectNewBtn?.addEventListener("click", () => showProjectForm("new"));
+  projectRenameBtn?.addEventListener("click", () => showProjectForm("rename"));
+
+  projectHideBtn?.addEventListener("click", async () => {
+    const name = currentProject;
+    if (!name || !(await changeProject(name, { hidden: true }))) return;
+    await loadProjects();
+    switchProject(null);
+    showToast(`Hid ${projectLabel(name)}. Its folder and chats are kept; "Show hidden" lists it again.`);
   });
 
   projectNewName?.addEventListener("input", () => {
     const name = folderNameFor(projectNewName.value);
-    if (projectWillBe) projectWillBe.textContent = name ? `Creates projects/${name}/` : "";
+    const verb = projectFormMode === "new" ? "Creates" : "Renames it to";
+    const unchanged = projectFormMode === "rename" && name === currentProject;
+    if (projectWillBe) projectWillBe.textContent = name && !unchanged ? `${verb} projects/${name}/` : "";
     if (projectError) projectError.hidden = true;
   });
 
   document.getElementById("project-new-cancel")?.addEventListener("click", () => {
-    hideNewProjectForm();
+    hideProjectForm();
     projectNewBtn?.focus();
   });
 
   projectNewForm?.addEventListener("submit", async (event) => {
     event.preventDefault();
     if (!projectNewName) return;
+    if (projectFormMode === "rename") {
+      const from = currentProject;
+      if (!from) return;
+      const renamed = await changeProject(from, { name: projectNewName.value });
+      if (!renamed) return;
+      await loadProjects();
+      closeProjectMenu({ focus: false });
+      showProject(renamed.name);
+      void loadSessions();
+      // The open chat's artefacts are served from the new folder now.
+      if (sessionId) void openSession(sessionId, { silent: true });
+      if (renamed.name !== from) showToast(`Renamed to ${projectLabel(renamed.name)}`);
+      return;
+    }
     try {
       const res = await fetch("/api/projects", {
         method: "POST",
@@ -1479,10 +1631,7 @@
         body: JSON.stringify({ name: projectNewName.value }),
       });
       if (!res.ok) {
-        if (projectError) {
-          projectError.textContent = await responseDetail(res);
-          projectError.hidden = false;
-        }
+        showProjectError(await responseDetail(res));
         return;
       }
       const made = await res.json();
@@ -1490,10 +1639,7 @@
       switchProject(made.name);
       showToast(`Made ${projectLabel(made.name)}`);
     } catch {
-      if (projectError) {
-        projectError.textContent = "Could not make the project. Is Humphrey still running?";
-        projectError.hidden = false;
-      }
+      showProjectError("Could not make the project. Is Humphrey still running?");
     }
   });
 
@@ -1504,11 +1650,19 @@
       closeProjectMenu({ focus: true });
       return;
     }
-    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
     if (event.target instanceof HTMLInputElement) return;
     const items = /** @type {HTMLElement[]} */ (
       [...projectMenu.querySelectorAll(".project-item")].filter((el) => !(/** @type {HTMLElement} */ (el).hidden))
     );
+    // Typing jumps to the project whose name starts with what's typed.
+    if (event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      typed = (Date.now() - typedAt < 800 ? typed : "") + event.key.toLowerCase();
+      typedAt = Date.now();
+      items.find((el) => (el.dataset.label || "").toLowerCase().startsWith(typed))?.focus();
+      event.preventDefault();
+      return;
+    }
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
     const at = items.indexOf(/** @type {HTMLElement} */ (document.activeElement));
     const step = event.key === "ArrowDown" ? 1 : -1;
     items[(at + step + items.length) % items.length]?.focus();

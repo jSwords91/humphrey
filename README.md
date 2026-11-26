@@ -192,9 +192,16 @@ but the one you have open.
 
 Chats you started before projects, and chats started without one, work in
 `workspace/` itself, the default project, which leaves `projects/` out of
-its file list. Humphrey never deletes a project's folder. A chat whose
-folder has been renamed or removed can still be read, and says so if you
-message it.
+its file list.
+
+The switcher's menu can also rename the project you're in, which renames
+its folder and moves its chats along (once none of them is working), or
+hide it, which keeps it out of the list until you pick it again under
+"Show hidden". Hiding writes a `.humphrey-hidden` file in the folder; delete
+it to undo. Humphrey never deletes a project's folder. If you rename or
+remove one on disk, its chats are listed under "Folder missing": they can
+still be read, and say so if you message them. Typing in the menu jumps to
+a project.
 
 ## Artefacts
 

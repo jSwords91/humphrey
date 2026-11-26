@@ -150,12 +150,20 @@
               <div class="project-menu" id="project-menu" hidden>
                 <ul class="project-list" id="project-list" aria-label="Projects"></ul>
                 <div class="project-menu-rule" aria-hidden="true"></div>
-                <button type="button" class="project-item project-new-btn" id="project-new-btn">
+                <button type="button" class="project-item project-action" id="project-new-btn">
                   <i class="ph ph-plus" aria-hidden="true"></i>
                   <span>New project</span>
                 </button>
+                <button type="button" class="project-item project-action" id="project-rename-btn" hidden>
+                  <i class="ph ph-pencil-simple" aria-hidden="true"></i>
+                  <span>Rename project</span>
+                </button>
+                <button type="button" class="project-item project-action" id="project-hide-btn" hidden>
+                  <i class="ph ph-eye-slash" aria-hidden="true"></i>
+                  <span>Hide project</span>
+                </button>
                 <form class="project-new-form" id="project-new-form" hidden>
-                  <label for="project-new-name">Project name</label>
+                  <label for="project-new-name" id="project-form-label">Project name</label>
                   <input
                     id="project-new-name"
                     name="project-new-name"

@@ -579,9 +579,10 @@ button:active:not(:disabled):not(.latest-btn):not(.btn-send) {
   font-family: var(--font-sans);
   font-size: 0.6875rem;
   color: var(--color-muted-soft);
+  white-space: normal; /* the name stays on one line; what's under it wraps */
 }
 
-.project-new-btn .ph-plus {
+.project-action .ph {
   color: var(--color-muted);
 }
 
