@@ -7,6 +7,7 @@ import binascii
 import html
 import logging
 from collections.abc import AsyncIterator, Callable
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
@@ -366,14 +367,34 @@ async def chatgpt_sign_out() -> AuthStatusOut:
 @app.get("/api/sessions", response_model=list[SessionSummaryOut])
 async def list_sessions() -> list[SessionSummaryOut]:
     rows = await get_session_store().list_recent(limit=20)
+    listed = {r.id for r in rows}
+    # New chats still in their first turn: not stored yet, but they can be
+    # left and come back to, so they're listed, newest first, named by
+    # their prompt as an unnamed chat would be.
+    starting = sorted(
+        (run for run in runs.current() if run.new_chat and not run.saved and run.session_id not in listed),
+        key=lambda run: run.started_ms,
+        reverse=True,
+    )
     return [
-        SessionSummaryOut(
-            id=r.id,
-            updated_at=r.updated_at,
-            title=r.title,
-            message_count=r.message_count,
-        )
-        for r in rows
+        *(
+            SessionSummaryOut(
+                id=run.session_id,
+                updated_at=datetime.fromtimestamp(run.started_ms / 1000, timezone.utc).isoformat(),
+                title=run.prompt,
+                message_count=0,
+            )
+            for run in starting
+        ),
+        *(
+            SessionSummaryOut(
+                id=r.id,
+                updated_at=r.updated_at,
+                title=r.title,
+                message_count=r.message_count,
+            )
+            for r in rows
+        ),
     ]
 
 
@@ -636,12 +657,10 @@ async def agent(body: AgentRequest) -> StreamingResponse:
     if previous is not None:
         await previous.wait_saved()
 
-    if session_id:
-        existing = await store.get(session_id)
-        session = existing or Session(id=session_id)
-    else:
+    existing = await store.get(session_id) if session_id else None
+    if session_id is None:
         session_id = new_session_id()
-        session = Session(id=session_id)
+    session = existing or Session(id=session_id)
 
     latest_user = body.message.content
     settings = get_settings()
@@ -701,6 +720,7 @@ async def agent(body: AgentRequest) -> StreamingResponse:
         log=log,
         prompt=latest_user,
         started_ms=prompt_message.timestamp_ms,
+        new_chat=existing is None,
     )
     tracker = ArtifactTracker(WORKSPACE_DIR)
 

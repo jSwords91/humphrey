@@ -108,12 +108,15 @@ async def test_coming_back_mid_turn_replays_it_from_the_start(client: AsyncClien
 
 
 @pytest.mark.asyncio
-async def test_a_new_chat_can_be_reopened_during_its_first_turn(client: AsyncClient) -> None:
+async def test_a_new_chat_can_be_found_and_reopened_during_its_first_turn(client: AsyncClient) -> None:
     """Nothing is stored until the first turn is, and a reload then is the
     likeliest moment of all."""
     session_id = uuid.uuid4().hex
     request = _start(client, session_id)
     await _asking(session_id)
+
+    [listed] = [r for r in (await client.get("/api/sessions")).json() if r["id"] == session_id]
+    assert listed["title"] == "ask me"  # named by its prompt until it's named properly
 
     reopened = await client.get(f"/api/sessions/{session_id}")
     assert reopened.status_code == 200

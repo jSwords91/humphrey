@@ -73,6 +73,7 @@ class Run:
         log: FrameLog,
         prompt: str,
         started_ms: int,
+        new_chat: bool,
     ) -> None:
         self.session_id = session_id
         self.harness = harness
@@ -83,6 +84,9 @@ class Run:
         # history anything from this turn, since the log replays it.
         self.prompt = prompt
         self.started_ms = started_ms
+        # Nothing is stored for a new chat until this turn is, so until
+        # then the run is what lists and opens it.
+        self.new_chat = new_chat
         self.stopped = False
         self._saved = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
@@ -129,6 +133,10 @@ def start(run: Run, work: Coroutine[Any, Any, None]) -> None:
 
 def get(session_id: str) -> Run | None:
     return _runs.get(session_id)
+
+
+def current() -> list[Run]:
+    return list(_runs.values())
 
 
 def clear_for_tests() -> None:

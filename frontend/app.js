@@ -3299,6 +3299,37 @@
   }
 
   /**
+   * The reply being written is done: drop its caret and draw it as Markdown,
+   * or remove it if nothing was written. At its end, or at a stop or error.
+   * @param {any} state
+   */
+  function settleReply(state) {
+    if (state.assistantEl) {
+      state.assistantEl.classList.remove("is-streaming");
+      const body = state.assistantEl.querySelector(".msg-body");
+      if (body instanceof HTMLElement) {
+        if (state.assistantText) {
+          setMarkdown(body, state.assistantText);
+        } else {
+          clearStreamCaret(body);
+        }
+      }
+      if (state.assistantText) {
+        state.assistantEl.append(buildMsgActions(state.assistantText));
+      }
+    }
+    if (state.assistantText) {
+      state.finalAssistantText = state.assistantText;
+      charsOut += state.assistantText.length;
+      updateStats();
+    } else if (state.assistantEl) {
+      state.assistantEl.remove();
+    }
+    state.assistantEl = null;
+    state.assistantText = "";
+  }
+
+  /**
    * @param {Record<string, unknown>} event
    * @param {{
    *   assistantEl: HTMLElement | null,
@@ -3411,29 +3442,7 @@
         contextTokens = (Number(u.input) || 0) + (Number(u.output) || 0);
         updateStats();
       }
-      if (state.assistantEl) {
-        state.assistantEl.classList.remove("is-streaming");
-        const body = state.assistantEl.querySelector(".msg-body");
-        if (body instanceof HTMLElement) {
-          if (state.assistantText) {
-            setMarkdown(body, state.assistantText);
-          } else {
-            clearStreamCaret(body);
-          }
-        }
-        if (state.assistantText) {
-          state.assistantEl.append(buildMsgActions(state.assistantText));
-        }
-      }
-      if (state.assistantText) {
-        state.finalAssistantText = state.assistantText;
-        charsOut += state.assistantText.length;
-        updateStats();
-      } else if (state.assistantEl) {
-        state.assistantEl.remove();
-      }
-      state.assistantEl = null;
-      state.assistantText = "";
+      settleReply(state);
       return;
     }
 
@@ -3524,12 +3533,14 @@
     }
 
     if (type === "error") {
+      settleReply(state);
       settleThought(state);
       showError(String(event.detail ?? "Unknown agent error"));
       setRunning(false);
     }
 
     if (type === "stopped") {
+      settleReply(state); // what was written before the stop stays
       settleThought(state);
       appendMessage("status", "Stopped.");
       announce("Run stopped.");
