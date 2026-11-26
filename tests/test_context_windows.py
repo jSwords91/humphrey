@@ -74,7 +74,7 @@ async def test_a_source_that_lists_no_windows_uses_the_default(client: AsyncClie
 async def test_a_turn_compacts_against_the_chosen_models_window(
     client: AsyncClient, plan: None, monkeypatch: pytest.MonkeyPatch, model: str, window: int
 ) -> None:
-    import app.main
+    import app.turns
     from providers.mock import MockProvider
 
     class Provider(MockProvider):
@@ -91,8 +91,8 @@ async def test_a_turn_compacts_against_the_chosen_models_window(
         windows.append(kwargs["context_window_tokens"])
         return None
 
-    monkeypatch.setattr(app.main, "build_provider", build_provider)
-    monkeypatch.setattr(app.main, "compact_if_needed", compact_if_needed)
+    monkeypatch.setattr(app.turns, "build_provider", build_provider)
+    monkeypatch.setattr(app.turns, "compact_if_needed", compact_if_needed)
     reply = await client.post("/api/agent", json={"message": {"content": "hi"}, "model": model})
     assert reply.status_code == 200
     assert windows == [window]

@@ -313,7 +313,7 @@ async def test_agent_endpoint_auto_compacts_a_large_history(
     context window is compacted for the model, while the stored transcript
     and what the user sees keep every message.
     """
-    import app.main
+    import app.turns
     from brain.messages import AssistantMessage, TextContent, UserMessage
     from app.sessions import Session, get_session_store
     from app.settings import get_settings, reset_settings_for_tests
@@ -330,7 +330,7 @@ async def test_agent_endpoint_auto_compacts_a_large_history(
     async def recording_provider(model=None, effort=None):
         return RecordingProvider()
 
-    monkeypatch.setattr(app.main, "build_provider", recording_provider)
+    monkeypatch.setattr(app.turns, "build_provider", recording_provider)
 
     monkeypatch.setenv("MODEL_CONTEXT_WINDOW_TOKENS", "2000")
     reset_settings_for_tests()

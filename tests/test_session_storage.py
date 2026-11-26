@@ -310,7 +310,7 @@ def test_local_list_keys_walks_only_the_prefix_directory(tmp_path: Path) -> None
 async def test_end_to_end_an_image_survives_storage_and_reaches_the_model(
     client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import app.main
+    import app.turns
     from app.sessions import reset_session_store_for_tests
     from app.settings import reset_settings_for_tests
     from app.storage import reset_object_store_for_tests
@@ -333,7 +333,7 @@ async def test_end_to_end_an_image_survives_storage_and_reaches_the_model(
     async def recording_provider(model=None, effort=None):
         return RecordingProvider()
 
-    monkeypatch.setattr(app.main, "build_provider", recording_provider)
+    monkeypatch.setattr(app.turns, "build_provider", recording_provider)
 
     png = base64.b64encode(_png()).decode("ascii")
     first = await client.post(
