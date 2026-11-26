@@ -90,7 +90,7 @@ async def test_coming_back_mid_turn_replays_it_from_the_start(client: AsyncClien
     # the run is there to follow, with what was typed to start it.
     reopened = (await client.get(f"/api/sessions/{session_id}")).json()
     assert [m["content"] for m in reopened["messages"] if m["role"] == "user"] == ["hello"]
-    assert reopened["run"] == {"prompt": "ask me"}
+    assert reopened["run"] == {"prompt": "ask me", "task": None}
 
     async def answer() -> None:
         await asyncio.sleep(0.05)  # once the follower is in
@@ -121,7 +121,7 @@ async def test_a_new_chat_can_be_found_and_reopened_during_its_first_turn(client
     reopened = await client.get(f"/api/sessions/{session_id}")
     assert reopened.status_code == 200
     assert reopened.json()["messages"] == []
-    assert reopened.json()["run"] == {"prompt": "ask me"}
+    assert reopened.json()["run"] == {"prompt": "ask me", "task": None}
 
     await client.post(f"/api/sessions/{session_id}/stop", json={})
     await request

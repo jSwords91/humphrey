@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -19,7 +20,12 @@ _MERMAID_SKILL = Path(__file__).resolve().parent.parent / "skills" / "mermaid-di
 
 
 def _pick_tool(latest: str) -> tuple[str, dict[str, Any]] | None:
+    if latest.startswith(_TASK_NOTICE):
+        return None  # a task reporting back: pass it on, whatever it quotes
     lower = latest.lower()
+    if "in the background" in lower:
+        job = re.sub(r"\s*in the background\s*", " ", latest, flags=re.IGNORECASE).strip()
+        return "start_task", {"description": "Background job", "prompt": job, "fork": "fork" in lower}
     if any(t in lower for t in ("architecture", "diagram", "how is this wired", "how it flows")):
         return "read", {"path": str(_MERMAID_SKILL)}
     if any(t in lower for t in ("write a note", "save a note", "create a file")):
@@ -30,6 +36,9 @@ def _pick_tool(latest: str) -> tuple[str, dict[str, Any]] | None:
         return "ask_user_question", {"questions": _MOCK_QUESTIONS}
     return None
 
+
+# How a background task's result starts (app/task_notice.py).
+_TASK_NOTICE = "<task-notification>"
 
 # What "ask me" asks offline: one single choice, one multiple choice.
 _MOCK_QUESTIONS = [
@@ -135,6 +144,14 @@ class MockProvider:
             )
             if name == "ask_user_question" and result is not None:
                 text += f"\n\nIt returned:\n\n{result.text}"
+        elif latest.startswith(_TASK_NOTICE):
+            what = re.search(r"<description>(.*?)</description>", latest)
+            found = re.search(r"<result>\n?(.*?)\n?</result>", latest, re.DOTALL)
+            text = (
+                "Offline mock provider — no model was called.\n\n"
+                f"The background task \"{what.group(1) if what else ''}\" reported back:\n\n"
+                f"{found.group(1).strip() if found else '(its result was too long to include)'}"
+            )
         else:
             preview = latest.strip().replace("\n", " ")
             if len(preview) > 100:

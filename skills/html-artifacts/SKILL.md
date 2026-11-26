@@ -15,6 +15,14 @@ Write one self-contained `.html` file to the working directory (e.g. `sales-char
 - Follow Humphrey's theme: dark by default, light when `<html data-theme="light">`. The attribute changes live, so read colours from the CSS variables below and redraw on change (see the template).
 - Weights 400 and 500 only. Containers use the fold: `border-radius: 3px 12px 12px 12px`.
 
+## Before you say it's done
+
+A script that doesn't parse leaves the chart blank, and nothing tells the user why. So:
+
+- Write the script on readable lines, as in the template, not squeezed onto one.
+- Check it parses. If `node` is available, save the inline script to a scratch `.js` file and run `node --check` on it. If not, read the script back and match every bracket, brace and parenthesis.
+- Fix anything that fails before you reply. Only say the chart is made once it is.
+
 ## Palette
 
 Series colours, in order: `--s1` tan, `--s2` sage, `--s3` coral, `--s4` mist, `--s5` deep tan, `--s6` sand. For one series, use `--s1`. Use `--s2` for good/up and `--s3` for bad/down only when that meaning applies.

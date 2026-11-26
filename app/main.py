@@ -6,7 +6,7 @@ import base64
 import binascii
 import html
 import logging
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -18,20 +18,14 @@ from pydantic import BaseModel, Field, model_validator
 from starlette.responses import Response
 from starlette.types import Scope
 
-from app.agent import build_harness, system_prompt
 from app.auth.chatgpt import AuthError, SignInRequired, TemporaryAuthError, get_chatgpt_auth
 from app.artifacts import (
-    ArtifactTracker,
     artifact_kind,
     inject_embed_script,
     resolve_workspace_file,
     scan_workspace,
 )
-from app.context_window import compact_if_needed
 from app.model_access import (
-    UnknownModel,
-    build_provider,
-    context_window_for,
     current_source,
     model_options,
 )
@@ -41,23 +35,20 @@ from app.image_processing import (
     detect_supported_image_mime_type,
     process_image,
 )
-from app.rendering.sse import SseRenderer, encode_sse
-from app import projects, runs
+from app import projects, runs, tasks
+from app.task_notice import parse as _notice
 from app.projects import ProjectError, ProjectExists
-from app.runs import FrameLog, Run
+from app.runs import Run
+from app.turns import TurnRefused, start_turn
 from app.skills import SkillError, expand_skill_command, load_skills
 from app.sessions import (
     SAFE_SESSION_ID,
     Session,
-    generate_session_title,
     get_session_store,
-    new_session_id,
 )
 from app.settings import DEFAULT_CONTEXT_WINDOW_TOKENS, get_settings
-from app.tools import TOOLS, WORKSPACE_DIR, tools_for_run
-from app.ui_bridge import WebUiBridge
-from brain.events import ToolExecutionEndEvent, ToolExecutionStartEvent
-from brain.messages import AgentMessage, AssistantMessage, ImageContent, TextContent, UserMessage
+from app.tools import WORKSPACE_DIR
+from brain.messages import AgentMessage, AssistantMessage, ImageContent, TextContent
 
 logger = logging.getLogger(__name__)
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
@@ -131,20 +122,24 @@ class SessionMessageOut(BaseModel):
     # not something the user typed - rendered distinctly by the frontend.
     # question: an ask_user_question card, with its answer in `question`.
     # tool: a tool run, its result in `content` and its card in `tool`.
-    role: Literal["user", "assistant", "context_summary", "question", "tool"]
+    role: Literal["user", "assistant", "context_summary", "question", "tool", "task"]
     content: str
     ts: int | None = None
     # URLs of the images attached to a user turn (GET /api/sessions/{id}/images/...).
     images: list[str] = Field(default_factory=list)
     question: dict[str, Any] | None = None
+    # task: a background task's result card, its result in `content`.
+    task: dict[str, Any] | None = None
     tool: dict[str, Any] | None = None
 
 
 class RunOut(BaseModel):
     """A turn still running in this chat: follow it at
-    /api/sessions/{id}/stream. ``prompt`` is what was typed to start it."""
+    /api/sessions/{id}/stream. ``prompt`` is what was typed to start it,
+    or ``task`` the background task whose result started it."""
 
     prompt: str
+    task: dict[str, Any] | None = None
 
 
 class SessionOut(BaseModel):
@@ -154,6 +149,8 @@ class SessionOut(BaseModel):
     updated_at: str
     title: str | None = None
     project: str | None = None
+    # The chat that started this one as a background task.
+    parent_id: str | None = None
     last_usage: dict[str, int] | None = None
     # Every model call stored in this chat, added up: input, output, and the
     # cached and reasoning parts of each (see providers' usage records).
@@ -167,6 +164,9 @@ class SessionSummaryOut(BaseModel):
     updated_at: str
     title: str | None
     message_count: int
+    # The chat that started this one as a background task: the rail shows
+    # it under that chat.
+    parent_id: str | None = None
 
 
 class ActivityOut(BaseModel):
@@ -174,7 +174,8 @@ class ActivityOut(BaseModel):
 
     session_id: str
     project: str | None
-    state: Literal["working", "needs_you"]
+    # queued: a background task waiting for a free slot (app/tasks.py).
+    state: Literal["working", "needs_you", "queued"]
 
 
 class ModelsOut(BaseModel):
@@ -427,8 +428,9 @@ async def list_sessions(project: str | None = None) -> list[SessionSummaryOut]:
             SessionSummaryOut(
                 id=run.session_id,
                 updated_at=datetime.fromtimestamp(run.started_ms / 1000, timezone.utc).isoformat(),
-                title=run.prompt,
+                title=run.title or run.prompt,
                 message_count=0,
+                parent_id=run.parent_id,
             )
             for run in starting
         ),
@@ -438,6 +440,7 @@ async def list_sessions(project: str | None = None) -> list[SessionSummaryOut]:
                 updated_at=r.updated_at,
                 title=r.title,
                 message_count=r.message_count,
+                parent_id=r.parent_id,
             )
             for r in rows
         ),
@@ -449,11 +452,19 @@ def list_activity() -> list[ActivityOut]:
     """Every chat with a turn under way, in any project, so the rail can
     mark chats it isn't following: one in another project waiting on a
     question, or one another tab started."""
-    return [
+    found = [
         ActivityOut(session_id=run.session_id, project=run.project, state=state)
         for run in runs.current()
         if (state := run.state) is not None
     ]
+    # A task without a run yet: queued for a slot, or just about to start.
+    with_runs = {a.session_id for a in found}
+    found += [
+        ActivityOut(session_id=t.id, project=t.project, state="queued" if t.state == "queued" else "working")
+        for t in tasks.unfinished()
+        if t.id not in with_runs
+    ]
+    return found
 
 
 @app.get("/api/sessions/{session_id}", response_model=SessionOut)
@@ -468,8 +479,9 @@ async def get_session(session_id: str) -> SessionOut:
         run = None
     session = await get_session_store().get(session_id)
     if session is None and run is not None:
-        # A new chat: stored once its first turn is, and working in its run's project.
-        session = Session(id=session_id, project=run.project)
+        # A new chat: stored once its first turn is. What it already is comes
+        # from its run: its project, and for a task, its parent and title.
+        session = Session(id=session_id, project=run.project, parent_id=run.parent_id, title=run.title)
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found.")
     rows = session.history_rows()
@@ -500,6 +512,7 @@ async def get_session(session_id: str) -> SessionOut:
                 ts=row.ts,
                 images=[f"/api/sessions/{session.id}/images/{digest}" for digest in row.images],
                 question=row.question,
+                task=row.task,
                 tool=row.tool,
             )
             for row in rows
@@ -508,10 +521,11 @@ async def get_session(session_id: str) -> SessionOut:
         updated_at=session.updated_at,
         title=session.title,
         project=session.project,
+        parent_id=session.parent_id,
         last_usage=last_usage,
         usage_totals=_usage_totals(messages),
         artifacts=artifacts,
-        run=RunOut(prompt=run.prompt) if run is not None else None,
+        run=RunOut(prompt=run.prompt, task=_notice(run.prompt)) if run is not None else None,
     )
 
 
@@ -545,38 +559,6 @@ async def get_session_image(session_id: str, digest: str) -> Response:
 # Seconds of silence before a stream sends a keepalive, e.g. while a
 # question card waits for an answer.
 KEEPALIVE_SECONDS = 15.0
-
-
-async def finish_turn(
-    session: Session,
-    store: Any,
-    title_provider: Any,
-    first_message: str,
-    *,
-    on_saved: Callable[[], None] = lambda: None,
-) -> None:
-    """Save the turn, then name a new chat and save again.
-
-    The transcript is saved first, so the chat is never lost to a slow or
-    failing title call (if the title model fails, generate_session_title
-    falls back to the start of the message). ``on_saved`` runs as soon as
-    the turn is stored, which lets the chat's next turn begin while this
-    one is still being named.
-    """
-
-    async def save() -> None:
-        try:
-            await store.save(session)
-        except Exception:  # noqa: BLE001
-            logger.exception("failed to persist session %s", session.id)
-
-    await save()
-    on_saved()
-    if session.title is None:
-        title = await generate_session_title(title_provider, first_message)
-        if title:
-            session.title = title
-            await save()
 
 
 USAGE_KEYS = ("input", "output", "cached_input", "reasoning_output")
@@ -704,142 +686,39 @@ def _process_uploaded_images(attachments: list[ImageAttachment]) -> tuple[list[I
 
 @app.post("/api/agent")
 async def agent(body: AgentRequest) -> StreamingResponse:
-    store = get_session_store()
+    """Send the person's message: start a turn (app/turns.py) and stream
+    it. A skill command is expanded and images are checked here, as what
+    the browser sends; the rest is the same for every turn."""
     session_id = body.session_id
     if session_id is not None and not SAFE_SESSION_ID.match(session_id):
         raise HTTPException(status_code=422, detail="Invalid session id.")
-
-    # One turn at a time per chat. A turn that has finished but isn't
-    # saved yet is waited for, or this one would start from the history
-    # before it and then save over it.
-    previous = runs.get(session_id) if session_id else None
-    if previous is not None and previous.harness.is_running:
-        raise HTTPException(
-            status_code=409, detail="This chat is still working: steer it or queue a follow-up."
-        )
-    if previous is not None:
-        await previous.wait_saved()
-
-    existing = await store.get(session_id) if session_id else None
-    if session_id is None:
-        session_id = new_session_id()
-    session = existing or Session(id=session_id)
-
     latest_user = body.message.content
-    settings = get_settings()
-    try:
-        provider = await build_provider(body.model, body.reasoning_effort)
-        # Housekeeping calls (compaction summaries, the chat's title) use the
-        # default effort: a "max" chat shouldn't make every title a max call.
-        housekeeping = await build_provider(body.model)
-    except UnknownModel as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-
     try:
         expanded = expand_skill_command(latest_user, load_skills())
     except SkillError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     prompt_text = expanded if expanded is not None else latest_user
 
-    project = session.project if existing is not None else body.project
-    try:
-        workdir = projects.folder(WORKSPACE_DIR, project)
-    except ProjectError as exc:
-        if existing is not None:  # its folder was renamed or removed on disk
-            raise HTTPException(status_code=409, detail=f"{exc} Start a new chat to carry on.") from exc
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    session.project = project
-
-    # Every check that can reject the request is above this line: the store
-    # may hand back the live session, so nothing changes it before here.
-    last = session.messages[-1] if session.messages else None
-    if isinstance(last, UserMessage) and last.content == latest_user:
-        session.messages.pop()  # a retried turn: don't store the prompt twice
-    history = session.model_context()
-    compaction = await compact_if_needed(
-        history,
-        provider=housekeeping,
-        system=system_prompt(workdir),
-        tools=TOOLS,
-        context_window_tokens=await context_window_for(provider.deployment_name),
-    )
-    if compaction is not None:
-        session.record_compaction(compaction.summary, kept_from=compaction.kept_from)
-        history = session.model_context()
-
     image_contents, image_notes = _process_uploaded_images(body.message.images)
     if image_notes:
         notes_text = "\n".join(image_notes)
         prompt_text = f"{prompt_text}\n\n{notes_text}" if prompt_text else notes_text
+    content: str | list[TextContent | ImageContent] = prompt_text
     if image_contents:
-        text_blocks = [TextContent(text=prompt_text)] if prompt_text else []
-        prompt_message = UserMessage(content=[*text_blocks, *image_contents])
-    else:
-        prompt_message = UserMessage(content=prompt_text)
+        content = [*([TextContent(text=prompt_text)] if prompt_text else []), *image_contents]
 
-    log = FrameLog()
-    bridge = WebUiBridge(lambda payload: log.publish(encode_sse({**payload, "session_id": session_id})))
-    harness = build_harness(
-        session_id=session_id,
-        provider=provider,
-        messages=history,
-        tools=tools_for_run(bridge, workdir),
-        workspace=workdir,
-    )
-    # Started here rather than in the task, so the run counts as running
-    # from the moment it can be found.
-    events = harness.prompt_message(prompt_message)
-    run = Run(
-        session_id,
-        harness=harness,
-        bridge=bridge,
-        log=log,
-        prompt=latest_user,
-        started_ms=prompt_message.timestamp_ms,
-        new_chat=existing is None,
-        project=project,
-    )
-    tracker = ArtifactTracker(workdir, projects.scan_exclusions(project))
-
-    async def run_turn() -> None:
-        """Run the turn and save it. Whoever follows the log sees its
-        frames; nobody needs to, and a tool can wait on the bridge while
-        its question card goes out."""
-        renderer = SseRenderer(session_id=session_id)
-        try:
-            async for event in events:
-                wire = renderer.to_sse(event)
-                if wire is not None:
-                    log.publish(wire)
-                if isinstance(event, ToolExecutionStartEvent):
-                    tracker.tool_started(event.tool_name)  # before the tool runs
-                if isinstance(event, ToolExecutionEndEvent):
-                    made = tracker.tool_finished(event.tool_name, event.result.details, event.is_error)
-                    for artifact in made:
-                        # Shown by its path in the project, served by its path in the workspace.
-                        artifact["name"] = artifact["path"]
-                        artifact["path"] = projects.served_path(project, artifact["name"])
-                        artifact["version"] = 1 + sum(
-                            1 for a in session.artifacts if a.get("path") == artifact["path"]
-                        )
-                        session.artifacts.append(artifact)
-                        log.publish(encode_sse({"type": "artifact", **artifact}))
-        except Exception:  # noqa: BLE001
-            logger.exception("turn failed for session %s", session_id)
-        finally:
-            try:
-                await events.aclose()  # type: ignore[attr-defined]
-            except Exception:  # noqa: BLE001
-                logger.debug("agent stream aclose failed", exc_info=True)
-            bridge.close()
-            if run.stopped:
-                harness.append_interrupted_tool_results()
-            # The harness started from model_context(); append only what this
-            # turn added, so the stored transcript stays complete.
-            session.messages.extend(harness.messages[len(history) :])
-            await finish_turn(session, store, housekeeping, latest_user, on_saved=run.mark_saved)
-
-    runs.start(run, run_turn())
+    try:
+        run = await start_turn(
+            session_id,
+            content,
+            shown=latest_user,
+            model=body.model,
+            effort=body.reasoning_effort,
+            project=body.project,
+        )
+    except TurnRefused as exc:
+        status = 422 if exc.kind == "invalid" else 409
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
     return _stream(run)
 
 

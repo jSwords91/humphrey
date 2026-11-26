@@ -35,6 +35,12 @@ SAFE_SESSION_ID = re.compile(r"^[a-zA-Z0-9_-]{8,64}$")
 SESSION_SCHEMA_VERSION = 4
 
 
+FORKED_NOTE = (
+    "This task started from the conversation in the chat that started it, so it knows "
+    "everything said there up to that point."
+)
+
+
 def new_session_id() -> str:
     return uuid.uuid4().hex
 
@@ -70,6 +76,11 @@ class Session:
     # The project the chat works in (app/projects.py); None is the default,
     # the workspace root, as for every chat from before projects.
     project: str | None = None
+    # The chat that started this one as a background task (app/tasks.py).
+    parent_id: str | None = None
+    # How many leading messages a forked task copied from its parent: the
+    # model sees them, the history view shows one line in their place.
+    inherited: int = 0
     # Files the agent created or changed (app/artifacts.py), in order, each
     # with created_ms so the UI can place it back in the transcript.
     artifacts: list[dict[str, Any]] = field(default_factory=list)
@@ -109,8 +120,14 @@ class Session:
 
     def history_rows(self) -> list[HistoryRow]:
         """The transcript as the UI's history view shows it, with each
-        compaction's summary where it happened (app/rendering/history.py)."""
-        return history_rows(self.messages, [(c.created_ms, c.summary) for c in self.compactions])
+        compaction's summary where it happened (app/rendering/history.py).
+        A forked task's inherited conversation is one line, not a copy."""
+        own = self.messages[self.inherited :]
+        rows = history_rows(own, [(c.created_ms, c.summary) for c in self.compactions])
+        if self.inherited:
+            forked_at = self.messages[self.inherited - 1].timestamp_ms
+            rows.insert(0, HistoryRow("context_summary", FORKED_NOTE, forked_at))
+        return rows
 
     def find_image(self, digest: str) -> tuple[bytes, str] | None:
         """The bytes and type of an image attached in this session, by digest."""
@@ -131,6 +148,8 @@ class Session:
             "updated_at": self.updated_at,
             "title": self.title,
             "project": self.project,
+            "parent_id": self.parent_id,
+            "inherited": self.inherited,
             "artifacts": self.artifacts,
             "compactions": [asdict(c) for c in self.compactions],
         }
@@ -177,6 +196,8 @@ class Session:
             updated_at=str(data.get("updated_at") or utc_now()),
             title=data.get("title"),
             project=data.get("project") if isinstance(data.get("project"), str) else None,
+            parent_id=data.get("parent_id") if isinstance(data.get("parent_id"), str) else None,
+            inherited=max(0, min(int(data.get("inherited") or 0), len(messages))),
             artifacts=[a for a in data.get("artifacts") or [] if isinstance(a, dict)],
             compactions=_load_compactions(data.get("compactions"), len(messages)),
             schema_version=max(version, SESSION_SCHEMA_VERSION),
@@ -216,6 +237,7 @@ class SessionSummary:
     title: str | None
     message_count: int
     project: str | None = None
+    parent_id: str | None = None
 
 
 class SessionStore(Protocol):
@@ -272,6 +294,7 @@ class MemorySessionStore:
                 title=s.title,
                 message_count=len(s.history_rows()),
                 project=s.project,
+                parent_id=s.parent_id,
             )
             for s in items[:limit]
         ]
@@ -507,10 +530,11 @@ class ObjectStoreSessionStore:
             title: str | None = None
             message_count = 0
             in_project: str | None = None
+            parent_id: str | None = None
             try:
                 summary = await self._read_summary(sid)
                 if summary is not None:
-                    title, message_count, in_project = summary
+                    title, message_count, in_project, parent_id = summary
             except Exception:  # noqa: BLE001 — list should still show the id
                 logger.debug("failed to read session summary %s", sid, exc_info=True)
             if in_project != project:
@@ -522,11 +546,14 @@ class ObjectStoreSessionStore:
                     title=title,
                     message_count=message_count,
                     project=in_project,
+                    parent_id=parent_id,
                 )
             )
         return summaries
 
-    async def _read_summary(self, session_id: str) -> tuple[str | None, int, str | None] | None:
+    async def _read_summary(
+        self, session_id: str
+    ) -> tuple[str | None, int, str | None, str | None] | None:
         """The stored summary, or, for a session saved before summaries
         existed, one built from the session and stored for next time."""
         from asyncio import to_thread
@@ -535,11 +562,12 @@ class ObjectStoreSessionStore:
         if raw is not None:
             try:
                 data = json.loads(raw.decode("utf-8"))
-                project = data.get("project")
+                project, parent_id = data.get("project"), data.get("parent_id")
                 return (
                     data.get("title"),
                     int(data.get("message_count") or 0),
                     project if isinstance(project, str) else None,
+                    parent_id if isinstance(parent_id, str) else None,
                 )
             except (ValueError, TypeError, AttributeError):  # bad JSON, encoding or shape
                 logger.warning("session %s summary is corrupt; rebuilding it", session_id)
@@ -551,7 +579,7 @@ class ObjectStoreSessionStore:
             await to_thread(self._put_summary, summary)
         except Exception:  # noqa: BLE001 - the list still works; retried next time
             logger.warning("could not store the summary for session %s", session_id, exc_info=True)
-        return summary["title"], summary["message_count"], summary["project"]
+        return summary["title"], summary["message_count"], summary["project"], summary["parent_id"]
 
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -572,6 +600,7 @@ def _summary_of(session: Session) -> dict[str, Any]:
         "title": session.title,
         "message_count": len(session.history_rows()),
         "project": session.project,
+        "parent_id": session.parent_id,
     }
 
 

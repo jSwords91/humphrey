@@ -92,6 +92,12 @@
       /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g,
       '<a href="$2" rel="noopener noreferrer" target="_blank">$1</a>',
     );
+    // A link to a file by a relative path, as Humphrey writes when it names
+    // a file it made: marked, and the page decides what opening it does.
+    s = s.replace(
+      /\[([^\]]+)\]\((?!\/|#|\.\.)([^)\s:]+)\)/g,
+      '<a href="#" class="md-file-link" data-path="$2">$1</a>',
+    );
     return s;
   }
 

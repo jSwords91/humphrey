@@ -14,7 +14,9 @@ import json
 from typing import Any
 
 from app.tools import tool_label
+from app.task_notice import parse as parse_notice
 from app.tools.ask_user_question import NAME as ASK_USER_QUESTION
+from app.tools.tasks import START as START_TASK
 from brain.events import (
     AgentEndEvent,
     AgentEvent,
@@ -54,6 +56,8 @@ def tool_outcome(tool_name: str, details: Any) -> dict[str, Any]:
         fields["exit_code"] = details["exit_code"]
     if tool_name == ASK_USER_QUESTION and "questions" in details:
         fields["question"] = details
+    if tool_name == START_TASK and "task_id" in details:
+        fields["task"] = {"task_id": details["task_id"], "description": details.get("description", "")}
     return fields
 
 
@@ -135,6 +139,9 @@ class SseRenderer:
     def _message_end(self, event: MessageEndEvent) -> dict[str, Any] | None:
         message = event.message
         if isinstance(message, UserMessage):
+            notice = parse_notice(message.text)
+            if notice is not None:  # a background task reporting back
+                return {"type": "task_notification", **notice}
             return {"type": "user_message", "text": message.text}
         if isinstance(message, ToolResultMessage):
             return None  # superseded by tool_execution_end

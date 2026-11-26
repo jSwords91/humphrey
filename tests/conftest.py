@@ -32,6 +32,7 @@ def _reset_singletons() -> None:
     from app.auth.chatgpt import reset_chatgpt_auth_for_tests
     from app.model_access import reset_plan_models_for_tests
     from app.runs import clear_for_tests as clear_runs_for_tests
+    from app.tasks import clear_for_tests as clear_tasks_for_tests
     from app.settings import reset_settings_for_tests
     from app.sessions import reset_session_store_for_tests
     from app.storage import reset_object_store_for_tests
@@ -40,6 +41,7 @@ def _reset_singletons() -> None:
     reset_object_store_for_tests()
     reset_session_store_for_tests()
     clear_runs_for_tests()
+    clear_tasks_for_tests()
     reset_chatgpt_auth_for_tests()
     reset_plan_models_for_tests()
     yield
@@ -47,6 +49,7 @@ def _reset_singletons() -> None:
     reset_object_store_for_tests()
     reset_session_store_for_tests()
     clear_runs_for_tests()
+    clear_tasks_for_tests()
     reset_chatgpt_auth_for_tests()
     reset_plan_models_for_tests()
 

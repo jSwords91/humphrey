@@ -16,8 +16,16 @@ def test_all_tools_have_object_parameter_schema() -> None:
         assert isinstance(params.get("required"), list)
 
 
-def test_tools_are_taus_four_and_ask_user_question() -> None:
-    assert [t.name for t in TOOLS] == ["read", "write", "edit", "bash", "ask_user_question"]
+def test_tools_are_taus_four_ask_user_question_and_the_task_tools() -> None:
+    assert [t.name for t in TOOLS] == [
+        "read",
+        "write",
+        "edit",
+        "bash",
+        "ask_user_question",
+        "start_task",
+        "get_task_result",
+    ]
 
 
 def test_read_schema_requires_path() -> None:

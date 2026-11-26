@@ -1183,6 +1183,27 @@
     artifactViewer.showModal();
   }
 
+  // A reply's link to a file in the chat's project (markdown.js marks them
+  // md-file-link) opens that file in the viewer, as its artefact card would.
+  document.addEventListener("click", async (event) => {
+    const link = event.target instanceof Element ? event.target.closest("a.md-file-link") : null;
+    if (!(link instanceof HTMLElement)) return;
+    event.preventDefault();
+    const name = (link.dataset.path || "").replace(/^\.\//, "");
+    try {
+      const res = await fetch(`/api/files${projectQuery()}`);
+      const files = res.ok ? await res.json() : [];
+      const file = files.find((/** @type {any} */ f) => shownPath(f) === name);
+      if (file) {
+        openArtifactViewer(file);
+      } else {
+        showToast(`${name} isn't in this project's files`);
+      }
+    } catch {
+      showToast("Could not open the file");
+    }
+  });
+
   artifactViewer?.addEventListener("click", (event) => {
     if (event.target === artifactViewer) artifactViewer.close(); // backdrop click
   });
@@ -1683,11 +1704,22 @@
   const ACTIVITY_MS = 4000;
   const projectNeeds = document.getElementById("project-needs");
   const railNeeds = document.getElementById("rail-needs");
-  /** @type {{ session_id: string, project: string | null, state: "working" | "needs_you" }[]} */
+  /** @type {{ session_id: string, project: string | null, state: "working" | "needs_you" | "queued" }[]} */
   let activity = [];
+  // When the list was last asked for: a task card drawn after that can't
+  // be judged by it yet.
+  let activityAt = 0;
+  // Set while the page reopens the chat to follow a turn it didn't start.
+  let catchingUp = false;
+  // Tasks this page has seen under way, and those it has since caught up
+  // on: a task's result can arrive, and Humphrey reply to it, between two
+  // looks at the list, so a task seen working that has gone is the signal.
+  const tasksSeen = new Set();
+  const tasksCaughtUp = new Set();
 
   async function loadActivity() {
     let next;
+    const askedAt = Date.now();
     try {
       const res = await fetch("/api/activity");
       if (!res.ok) return;
@@ -1702,7 +1734,31 @@
       Boolean(sessionList?.querySelector(`[data-session-id="${CSS.escape(id)}"]`));
     const unlisted = next.some((/** @type {any} */ a) => a.project === currentProject && !listed(a.session_id));
     activity = next;
+    activityAt = askedAt;
+    for (const a of activity) tasksSeen.add(a.session_id);
     paintActivity();
+    // The open chat started a turn this page isn't following: a task's
+    // result came back, or another tab sent something. Follow it. Or one
+    // of its tasks this page saw working has gone with no result drawn: its
+    // result and Humphrey's reply may have come and gone between looks.
+    const open = sessionId;
+    const missed = [...transcript.querySelectorAll('.task-card[data-kind="started"]')]
+      .map((el) => String(/** @type {HTMLElement} */ (el).dataset.taskId))
+      .filter(
+        (id) =>
+          tasksSeen.has(id) &&
+          !tasksCaughtUp.has(id) &&
+          !activity.some((a) => a.session_id === id) &&
+          !transcript.querySelector(`.task-card[data-kind="result"][data-task-id="${CSS.escape(id)}"]`),
+      );
+    for (const id of missed) tasksCaughtUp.add(id);
+    const following = activity.some((a) => a.session_id === open && a.state !== "queued");
+    if (open && !activeRun && !catchingUp && (following || missed.length)) {
+      catchingUp = true;
+      void openSession(open, { silent: true }).finally(() => {
+        catchingUp = false;
+      });
+    }
     // A chat that ended has a new title and time; a new one in its first
     // turn isn't in the list yet.
     if (ended || unlisted) void loadSessions();
@@ -1724,6 +1780,14 @@
   }
 
   function paintActivity() {
+    for (const item of document.querySelectorAll('#transcript .task-card[data-kind="started"]')) {
+      const card = /** @type {HTMLElement} */ (item);
+      if (activityAt < Number(card.dataset.since || 0)) continue;
+      const state = activity.find((a) => a.session_id === card.dataset.taskId)?.state || "finished";
+      card.dataset.state = state;
+      const word = card.querySelector(".task-state");
+      if (word) word.textContent = TASK_WORDS[state] || state;
+    }
     for (const row of document.querySelectorAll("#session-list .session-item[data-session-id]")) {
       const el = /** @type {HTMLElement} */ (row);
       const state = activity.find((a) => a.session_id === el.dataset.sessionId)?.state;
@@ -3405,6 +3469,104 @@
     return false;
   }
 
+  // Background tasks (app/tasks.py). Humphrey starts one with start_task:
+  // a card under that call follows the task, and a card where its result
+  // came back shows the result. Both open the task's own chat.
+  const TASK_WORDS = /** @type {Record<string, string>} */ ({
+    working: "working",
+    needs_you: "needs you",
+    queued: "queued",
+    finished: "finished",
+    completed: "done",
+    failed: "failed",
+    stopped: "stopped",
+  });
+
+  /**
+   * @param {"started" | "result"} kind
+   * @param {string} taskId
+   * @param {string} title
+   * @param {string} state
+   * @param {string} label
+   */
+  function taskCard(kind, taskId, title, state, label) {
+    const card = document.createElement("section");
+    card.className = "task-card msg-enter";
+    card.dataset.kind = kind;
+    card.dataset.taskId = taskId;
+    card.dataset.state = state;
+    card.dataset.since = String(Date.now());
+    const head = document.createElement("div");
+    head.className = "task-head";
+    const what = document.createElement("span");
+    what.textContent = label;
+    const stateEl = document.createElement("span");
+    stateEl.className = "task-state";
+    stateEl.textContent = TASK_WORDS[state] || state;
+    head.append(what, stateEl);
+    const name = document.createElement("p");
+    name.className = "task-title";
+    name.textContent = title;
+    const body = document.createElement("div");
+    body.className = "task-body";
+    const foot = document.createElement("div");
+    foot.className = "task-foot";
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "btn-ghost btn-sm";
+    open.textContent = "Open task";
+    open.addEventListener("click", () => void openSession(taskId));
+    foot.append(open);
+    card.append(head, name, body, foot);
+    return card;
+  }
+
+  /** The card under a start_task call, following its task.
+   * @param {{ task_id: string, description: string }} task @param {{ animate?: boolean }} [opts] */
+  function appendTaskStarted(task, opts = {}) {
+    const card = taskCard("started", String(task.task_id), String(task.description || "Background task"), "working", "Background task");
+    if (opts.animate === false) {
+      card.classList.remove("msg-enter");
+      card.dataset.since = "0"; // from history: the list already speaks for it
+    }
+    transcript.append(card);
+    paintActivity();
+    return card;
+  }
+
+  /** The card where a task's result came back.
+   * @param {any} notice @param {{ animate?: boolean }} [opts] */
+  function appendTaskResult(notice, opts = {}) {
+    const status = String(notice.status || "completed");
+    const label =
+      status === "completed" ? "Background task finished" : status === "failed" ? "Background task failed" : "Background task stopped";
+    const card = taskCard("result", String(notice.task_id || ""), String(notice.description || "Background task"), status, label);
+    if (opts.animate === false) card.classList.remove("msg-enter");
+    const body = /** @type {HTMLElement} */ (card.querySelector(".task-body"));
+    if (notice.pending) {
+      body.textContent = "The result was too long to include here, so Humphrey is reading it in full.";
+    } else if (notice.result) {
+      setMarkdown(body, String(notice.result));
+    }
+    transcript.append(card);
+    return card;
+  }
+
+  /** A task's own chat names the chat that started it. @param {string} parentId */
+  function appendTaskOrigin(parentId) {
+    const row = document.createElement("div");
+    row.className = "task-origin";
+    const text = document.createElement("span");
+    text.textContent = "A background task, started from another chat.";
+    const back = document.createElement("button");
+    back.type = "button";
+    back.className = "link-btn";
+    back.textContent = "Back to that chat";
+    back.addEventListener("click", () => void openSession(parentId));
+    row.append(text, back);
+    transcript.append(row);
+  }
+
   /**
    * The run is asking: show the card below the tool call and wait.
    * @param {Record<string, any>} event
@@ -3564,11 +3726,24 @@
         sessionList.append(empty);
         return;
       }
+      // A chat's background tasks go under it; one whose chat isn't listed
+      // stands on its own.
+      const listedIds = new Set(rows.map((/** @type {any} */ r) => r.id));
+      /** @type {Map<string, any[]>} */
+      const tasksOf = new Map();
+      const top = [];
       for (const row of rows) {
+        if (row.parent_id && listedIds.has(row.parent_id)) {
+          tasksOf.set(row.parent_id, [...(tasksOf.get(row.parent_id) || []), row]);
+        } else {
+          top.push(row);
+        }
+      }
+      for (const row of top.flatMap((r) => [r, ...(tasksOf.get(r.id) || [])])) {
         const li = document.createElement("li");
         const btn = document.createElement("button");
         btn.type = "button";
-        btn.className = "session-item";
+        btn.className = row.parent_id ? "session-item is-task" : "session-item";
         if (row.id === sessionId) {
           btn.classList.add("is-active");
         }
@@ -3614,8 +3789,9 @@
       }
       const data = await res.json();
       showProject(typeof data.project === "string" ? data.project : null);
+      const parentId = typeof data.parent_id === "string" ? data.parent_id : null;
       const rows = (data.messages || []).filter(
-        (m) => m && (m.content || m.role === "tool" || (Array.isArray(m.images) && m.images.length > 0)),
+        (m) => m && (m.content || m.role === "tool" || m.role === "task" || (Array.isArray(m.images) && m.images.length > 0)),
       );
       // `messages` counts the user/assistant turns shown in the UI; a
       // context-summary row is rendered below but kept out of it.
@@ -3623,6 +3799,7 @@
       sessionId = id;
       localStorage.setItem(SESSION_KEY, id);
       clearTranscript();
+      if (parentId) appendTaskOrigin(parentId);
       liveTools.clear();
       refreshActiveTool();
       toolsUsed = 0;
@@ -3671,6 +3848,12 @@
           // Artefacts are placed before a top-level row, so a group is placed
           // once, by its first run: a file a run made goes after its group.
           el = firstInGroup ? toolGroup.toolGroupEl : null;
+          if (t.task) {
+            appendTaskStarted(t.task, { animate: false });
+            toolGroup = null;
+          }
+        } else if (msg.role === "task" && msg.task) {
+          el = appendTaskResult(msg.task, { animate: false });
         } else if (msg.role === "context_summary") {
           el = appendMessage("context-summary", msg.content, { animate: false });
         } else if (msg.role === "question") {
@@ -3700,7 +3883,9 @@
       // A turn still running here: the history stops before it, so show
       // what was typed to start it, and below, follow the run itself.
       const running = data.run && typeof data.run.prompt === "string" ? data.run : null;
-      if (running) {
+      if (running && running.task) {
+        appendTaskResult(running.task, { animate: false }); // a task reporting back started it
+      } else if (running) {
         messages.push({ role: "user", content: running.prompt });
         appendMessage("user", running.prompt, { animate: false });
       }
@@ -3885,6 +4070,18 @@
       return;
     }
 
+    if (type === "task_notification") {
+      // A page that reopened the chat to follow this turn already drew it.
+      const drawn = [...transcript.querySelectorAll('.task-card[data-kind="result"]')].some(
+        (el) => /** @type {HTMLElement} */ (el).dataset.taskId === String(event.task_id ?? ""),
+      );
+      if (!drawn) appendTaskResult(event);
+      state.toolGroupEl = null;
+      pinToBottom();
+      void loadActivity();
+      return;
+    }
+
     if (type === "ui_request" && event.kind === "question") {
       showAsk(event, state);
       void loadActivity();
@@ -4054,6 +4251,11 @@
 
       const ms = Math.max(1, Math.round(performance.now() - card.started));
       const isError = finishToolCard(card, tool, rawResult, event, state, ms);
+      if (event.task && typeof event.task === "object") {
+        appendTaskStarted(/** @type {any} */ (event.task));
+        state.toolGroupEl = null; // later tools start a group below the card
+        void loadActivity();
+      }
       if (callId) {
         liveTools.delete(callId);
       }

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 
-from app.main import finish_turn
+from app.turns import finish_turn
 from app.sessions import MemorySessionStore, Session
 from brain.messages import AssistantMessage, UserMessage
 from brain.provider import ModelChunk
