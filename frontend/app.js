@@ -883,6 +883,8 @@
   async function renderArtifactPreview(body, art, opts = {}) {
     body.replaceChildren();
     body.dataset.kind = art.kind;
+    // Its links to other files are relative to its own folder.
+    body.dataset.base = shownPath(art).split("/").slice(0, -1).join("/");
     try {
       if (opts.source) {
         const lang = SOURCE_LANG[art.kind] || extensionOf(art.path) || "text";
@@ -1183,14 +1185,35 @@
     artifactViewer.showModal();
   }
 
-  // A reply's link to a file in the chat's project (markdown.js marks them
-  // md-file-link) opens that file in the viewer, as its artefact card would.
+  /** A link's path from the project's folder, or null if it climbs out. */
+  function resolveFileLink(base, path) {
+    const parts = base ? base.split("/") : [];
+    for (const part of path.split("/")) {
+      if (part === "..") {
+        if (!parts.length) return null;
+        parts.pop();
+      } else if (part && part !== ".") {
+        parts.push(part);
+      }
+    }
+    return parts.join("/");
+  }
+
+  // A link to a file in the chat's project (markdown.js marks them
+  // md-file-link) opens that file in the viewer, as its artefact card would:
+  // from a reply, relative to the project's folder; from a file's preview,
+  // relative to that file's folder.
   document.addEventListener("click", async (event) => {
     const link = event.target instanceof Element ? event.target.closest("a.md-file-link") : null;
     if (!(link instanceof HTMLElement)) return;
     event.preventDefault();
-    const name = (link.dataset.path || "").replace(/^\.\//, "");
+    const base = link.closest("[data-base]")?.getAttribute("data-base") || "";
     try {
+      const name = resolveFileLink(base, decodeURI(link.dataset.path || ""));
+      if (name === null) {
+        showToast(`${link.dataset.path} is outside this project`);
+        return;
+      }
       const res = await fetch(`/api/files${projectQuery()}`);
       const files = res.ok ? await res.json() : [];
       const file = files.find((/** @type {any} */ f) => shownPath(f) === name);
