@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from app.mentions import visible_text
 from app.tools import tool_label
 from app.task_notice import parse as parse_notice
 from app.tools.ask_user_question import NAME as ASK_USER_QUESTION
@@ -142,7 +143,7 @@ class SseRenderer:
             notice = parse_notice(message.text)
             if notice is not None:  # a background task reporting back
                 return {"type": "task_notification", **notice}
-            return {"type": "user_message", "text": message.text}
+            return {"type": "user_message", "text": visible_text(message.text)}
         if isinstance(message, ToolResultMessage):
             return None  # superseded by tool_execution_end
         if isinstance(message, AssistantMessage):

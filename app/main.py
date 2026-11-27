@@ -40,6 +40,7 @@ from app.task_notice import parse as _notice
 from app.projects import ProjectError, ProjectExists
 from app.runs import Run
 from app.turns import TurnRefused, start_turn
+from app.mentions import mentions_block
 from app.skills import SkillError, expand_skill_command, load_skills
 from app.sessions import (
     SAFE_SESSION_ID,
@@ -588,7 +589,8 @@ def _require_running(session_id: str) -> Run:
 @app.post("/api/sessions/{session_id}/steer", response_model=QueueOut)
 async def steer_session(session_id: str, body: QueueRequest) -> QueueOut:
     """Inject a mid-run steering message (drained between tool turns)."""
-    queued = _require_running(session_id).harness.steer(body.content.strip())
+    run = _require_running(session_id)
+    queued = run.harness.steer(await _with_mentions(body.content.strip(), run.project))
     return QueueOut(
         steering=len(queued.steering),
         follow_up=len(queued.follow_up),
@@ -599,7 +601,8 @@ async def steer_session(session_id: str, body: QueueRequest) -> QueueOut:
 @app.post("/api/sessions/{session_id}/follow-up", response_model=QueueOut)
 async def follow_up_session(session_id: str, body: QueueRequest) -> QueueOut:
     """Queue a follow-up for after the current run would otherwise settle."""
-    queued = _require_running(session_id).harness.follow_up(body.content.strip())
+    run = _require_running(session_id)
+    queued = run.harness.follow_up(await _with_mentions(body.content.strip(), run.project))
     return QueueOut(
         steering=len(queued.steering),
         follow_up=len(queued.follow_up),
@@ -703,6 +706,10 @@ async def agent(body: AgentRequest) -> StreamingResponse:
     if image_notes:
         notes_text = "\n".join(image_notes)
         prompt_text = f"{prompt_text}\n\n{notes_text}" if prompt_text else notes_text
+    if "@" in latest_user:  # tagged files come from the chat's own project
+        existing = await get_session_store().get(session_id) if session_id else None
+        project = existing.project if existing is not None else body.project
+        prompt_text = await _with_mentions(prompt_text, project, typed=latest_user)
     content: str | list[TextContent | ImageContent] = prompt_text
     if image_contents:
         content = [*([TextContent(text=prompt_text)] if prompt_text else []), *image_contents]
@@ -720,6 +727,17 @@ async def agent(body: AgentRequest) -> StreamingResponse:
         status = 422 if exc.kind == "invalid" else 409
         raise HTTPException(status_code=status, detail=str(exc)) from exc
     return _stream(run)
+
+
+async def _with_mentions(text: str, project: str | None, *, typed: str | None = None) -> str:
+    """``text`` with the files the person tagged (in ``typed``, what they
+    wrote: a skill's own text may hold an @) attached (app/mentions.py)."""
+    try:
+        folder = projects.folder(WORKSPACE_DIR, project)
+    except ProjectError:
+        return text  # the turn is refused for it, and says why
+    block = await mentions_block(text if typed is None else typed, folder)
+    return text if block is None else f"{text}\n\n{block}"
 
 
 def _stream(run: Run) -> StreamingResponse:
@@ -824,9 +842,10 @@ async def _move_chats(old: str, new: str) -> None:
 
 
 @app.get("/api/files")
-def list_files(project: str | None = None) -> list[dict[str, Any]]:
+def list_files(project: str | None = None, q: str = "") -> list[dict[str, Any]]:
     """A project's files (with no ``project``, the default project's),
-    newest first (capped), for the UI's Files list."""
+    newest first (capped), for the UI's Files list; with ``q``, only those
+    whose path holds it, as the composer's @ list asks."""
     try:
         workdir = projects.folder(WORKSPACE_DIR, project)
     except ProjectError as exc:
@@ -841,6 +860,7 @@ def list_files(project: str | None = None) -> list[dict[str, Any]]:
             "mtime": s.mtime_ns // 1_000_000,
         }
         for path, s in stamps.items()
+        if q.casefold() in path.casefold()
     ]
     rows.sort(key=lambda r: r["mtime"], reverse=True)
     return rows[:200]

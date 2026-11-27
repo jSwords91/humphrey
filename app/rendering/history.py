@@ -18,6 +18,7 @@ from typing import Any, Literal
 
 from app.context_window import COMPACTION_SUMMARY_PREFIX
 from app.image_processing import image_bytes, image_digest
+from app.mentions import visible_text
 from app.rendering.sse import tool_outcome
 from app.task_notice import parse as parse_notice
 from app.tools import tool_label
@@ -101,6 +102,7 @@ def _user_row(message: UserMessage) -> HistoryRow | None:
         return HistoryRow(
             "context_summary", text.removeprefix(COMPACTION_SUMMARY_PREFIX), message.timestamp_ms
         )
+    text = visible_text(text)
     digests: list[str] = []
     unshowable = 0
     for image in message.images:
