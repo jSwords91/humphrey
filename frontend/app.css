@@ -2470,7 +2470,42 @@ button:active:not(:disabled):not(.latest-btn):not(.btn-send) {
     var(--shadow-md);
 }
 
+/* Tagged files are marked behind the message box: a copy of its text,
+   laid out the same, paints a tint under each @tag and nothing else. */
+.composer-input {
+  position: relative;
+}
+
+.composer textarea,
+.composer-tags {
+  font: inherit;
+  font-size: 1rem;
+  line-height: var(--lh-snug);
+  padding: var(--space-4) var(--space-4) var(--space-2);
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+.composer-tags {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  color: transparent;
+}
+
+.composer-tag {
+  color: transparent;
+  background: var(--color-accent-dim);
+  border-radius: 4px;
+  box-shadow:
+    0 0 0 2px var(--color-accent-dim),
+    inset 0 -1.5px 0 color-mix(in srgb, var(--hb-accent) 55%, transparent);
+}
+
 .composer textarea {
+  position: relative; /* above the tags */
+  display: block;
   width: 100%;
   min-height: 56px;
   max-height: 220px;
@@ -2479,10 +2514,6 @@ button:active:not(:disabled):not(.latest-btn):not(.btn-send) {
   outline: none;
   background: transparent;
   color: var(--color-fg);
-  font: inherit;
-  font-size: 1rem;
-  line-height: var(--lh-snug);
-  padding: var(--space-4) var(--space-4) var(--space-2);
   overflow-y: auto;
   scrollbar-width: none;
 }
@@ -3427,6 +3458,43 @@ button:active:not(:disabled):not(.latest-btn):not(.btn-send) {
 .task-card[data-state="finished"]::before,
 .task-card[data-state="completed"]::before {
   background: var(--hb-accent);
+}
+
+/* The head and title are the card's toggle; the chevron says which way,
+   as the context summary's does. */
+.task-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+}
+
+.task-summary::-webkit-details-marker,
+.task-summary::marker {
+  display: none;
+  content: "";
+}
+
+.task-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.task-label::before {
+  content: "";
+  width: 0.35rem;
+  height: 0.35rem;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform 160ms var(--ease);
+}
+
+.task-card[open] .task-label::before {
+  transform: rotate(45deg);
 }
 
 .task-head {

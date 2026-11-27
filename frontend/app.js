@@ -11,6 +11,10 @@
   const transcript = document.getElementById("transcript");
   const composer = document.getElementById("composer");
   const question = document.getElementById("question");
+  const composerTags = document.getElementById("composer-tags");
+  // Paths known to be files in this project: picked from the @ list, or
+  // typed out in full. Only these are marked as tags (see paintTags).
+  const taggedPaths = new Set();
   const primaryBtn = document.getElementById("primary-action");
   const primaryLabel = document.getElementById("primary-label");
   const stopBtn = document.getElementById("stop-btn");
@@ -727,6 +731,7 @@
     question.style.height = "auto";
     const next = Math.min(Math.max(question.scrollHeight, 56), 220);
     question.style.height = `${next}px`;
+    paintTags();
     syncSendEnabled();
     pinToBottom();
   }
@@ -1376,6 +1381,7 @@
   // server attaches each tagged file for the model (app/mentions.py).
   const mentionMenu = document.getElementById("mention-menu");
   const MAX_MENTION_OPTIONS = 8;
+  const TAG_END = /[.,;:!?)\]}']+$/; // punctuation after a tag, as app/mentions.py drops it
   /** @type {{ start: number, items: string[], active: number } | null} */
   let mention = null;
   let mentionTicket = 0;
@@ -1395,7 +1401,8 @@
       return;
     }
     const ticket = ++mentionTicket;
-    const params = new URLSearchParams({ q: found.query });
+    const typed = found.query.replace(TAG_END, ""); // "see @notes.md." means notes.md
+    const params = new URLSearchParams({ q: typed });
     if (currentProject) params.set("project", currentProject);
     let files = [];
     try {
@@ -1406,6 +1413,10 @@
     }
     if (ticket !== mentionTicket) return; // a later keystroke overtook this answer
     const items = files.slice(0, MAX_MENTION_OPTIONS).map(shownPath);
+    if (items.includes(typed)) {
+      taggedPaths.add(typed);
+      paintTags();
+    }
     if (items.length === 0) {
       closeMentions();
       return;
@@ -1450,9 +1461,32 @@
     if (!mention) return;
     const path = mention.items[index];
     const tag = /\s/.test(path) ? `@"${path}" ` : `@${path} `;
+    taggedPaths.add(path);
     question.setRangeText(tag, mention.start, question.selectionStart, "end");
     closeMentions();
     autoSize();
+  }
+
+  /** Mark each @tag of a known file under the message box's text. */
+  function paintTags() {
+    if (!composerTags) return;
+    const text = question.value;
+    const parts = [];
+    let last = 0;
+    // As app/mentions.py reads a tag: @"a name" or @path, less end punctuation.
+    for (const m of text.matchAll(/(?<!\S)@(?:"([^"\n]+)"|([^\s"]+))/g)) {
+      const path = m[1] ?? [m[2].replace(TAG_END, ""), m[2]].find((p) => taggedPaths.has(p));
+      if (path === undefined || !taggedPaths.has(path)) continue;
+      const tag = m[1] !== undefined ? m[0] : `@${path}`;
+      const mark = document.createElement("mark");
+      mark.className = "composer-tag";
+      mark.textContent = tag;
+      parts.push(text.slice(last, m.index), mark);
+      last = m.index + tag.length;
+    }
+    parts.push(`${text.slice(last)}\n`); // a last empty line still takes its height
+    composerTags.replaceChildren(...parts);
+    composerTags.scrollTop = question.scrollTop;
   }
 
   /** Arrow keys, Enter/Tab and Esc while the list is open. @param {KeyboardEvent} event */
@@ -1500,6 +1534,8 @@
   function showProject(project) {
     if (project === currentProject) return;
     currentProject = project;
+    taggedPaths.clear(); // another project's files aren't these
+    paintTags();
     if (project) {
       localStorage.setItem(PROJECT_KEY, project);
     } else {
@@ -1909,10 +1945,7 @@
     for (const item of document.querySelectorAll('#transcript .task-card[data-kind="started"]')) {
       const card = /** @type {HTMLElement} */ (item);
       if (activityAt < Number(card.dataset.since || 0)) continue;
-      const state = activity.find((a) => a.session_id === card.dataset.taskId)?.state || "finished";
-      card.dataset.state = state;
-      const word = card.querySelector(".task-state");
-      if (word) word.textContent = TASK_WORDS[state] || state;
+      setTaskState(card, activity.find((a) => a.session_id === card.dataset.taskId)?.state || "finished");
     }
     for (const row of document.querySelectorAll("#session-list .session-item[data-session-id]")) {
       const el = /** @type {HTMLElement} */ (row);
@@ -3616,15 +3649,19 @@
    * @param {string} label
    */
   function taskCard(kind, taskId, title, state, label) {
-    const card = document.createElement("section");
+    const card = document.createElement("details");
     card.className = "task-card msg-enter";
     card.dataset.kind = kind;
     card.dataset.taskId = taskId;
-    card.dataset.state = state;
     card.dataset.since = String(Date.now());
+    const summary = document.createElement("summary");
+    summary.className = "task-summary";
+    // Once someone opens or closes it, the card stays as they left it.
+    summary.addEventListener("click", () => (card.dataset.userToggled = "1"));
     const head = document.createElement("div");
     head.className = "task-head";
     const what = document.createElement("span");
+    what.className = "task-label";
     what.textContent = label;
     const stateEl = document.createElement("span");
     stateEl.className = "task-state";
@@ -3643,8 +3680,21 @@
     open.textContent = "Open task";
     open.addEventListener("click", () => void openSession(taskId));
     foot.append(open);
-    card.append(head, name, body, foot);
+    summary.append(head, name);
+    card.append(summary, body, foot);
+    setTaskState(card, state);
     return card;
+  }
+
+  /** A task under way stays open; a finished one folds to its title line,
+   * so done tasks don't fill the chat. @param {HTMLElement} card @param {string} state */
+  function setTaskState(card, state) {
+    card.dataset.state = state;
+    const word = card.querySelector(".task-state");
+    if (word) word.textContent = TASK_WORDS[state] || state;
+    if (card.dataset.userToggled !== "1" && card instanceof HTMLDetailsElement) {
+      card.open = state === "working" || state === "needs_you" || state === "queued";
+    }
   }
 
   /** The card under a start_task call, following its task.
@@ -4728,6 +4778,9 @@
   question.addEventListener("input", autoSize);
   question.addEventListener("input", () => void updateMentions());
   question.addEventListener("blur", closeMentions);
+  question.addEventListener("scroll", () => {
+    if (composerTags) composerTags.scrollTop = question.scrollTop;
+  });
   question.addEventListener("keydown", (event) => {
     if (handleMentionKey(event)) return;
     if (event.key === "Enter" && event.altKey && stage.dataset.running === "1") {
