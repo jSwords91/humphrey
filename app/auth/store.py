@@ -120,9 +120,10 @@ class CredentialStore:
     def save(self, credentials: CredentialFile) -> None:
         self.ensure_directory()
         content = json.dumps(_to_json(credentials), indent=2) + "\n"
+        # mkstemp creates the file owner-only (0600) before anything is written.
+        # No os.fchmod: Windows only has it from Python 3.13.
         handle, temporary = tempfile.mkstemp(dir=self._directory, prefix=f".{FILE_NAME}.")
         try:
-            os.fchmod(handle, 0o600)
             with os.fdopen(handle, "w", encoding="utf-8") as stream:
                 stream.write(content)
             os.replace(temporary, self.path)

@@ -91,6 +91,16 @@ async def test_the_credential_file_is_owner_only(auth: ChatGPTAuth, server: Fake
     assert stat.S_IMODE((tmp_path / "credentials" / "chatgpt.json").stat().st_mode) == 0o600
 
 
+async def test_saving_works_without_os_fchmod(
+    auth: ChatGPTAuth, server: FakeOpenAIAuth, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Windows has no os.fchmod before Python 3.13; every save once failed there.
+    monkeypatch.delattr("os.fchmod", raising=False)
+    await _sign_in(auth, server)
+    assert _stored(tmp_path)["registrations"]
+    assert [p.name for p in (tmp_path / "credentials").iterdir() if p.name.startswith(".")] == []
+
+
 @pytest.mark.parametrize(
     "tamper",
     [
@@ -349,8 +359,7 @@ def test_a_filesystem_that_ignores_chmod_is_reported_once(
 
     import app.auth.store as store_module
 
-    real_chmod, real_fchmod = os.chmod, os.fchmod  # store_module.os is the os module
-    monkeypatch.setattr(store_module.os, "fchmod", lambda fd, mode: real_fchmod(fd, 0o666))
+    real_chmod = os.chmod  # store_module.os is the os module
     monkeypatch.setattr(store_module.os, "chmod", lambda path, mode: real_chmod(path, 0o777))
     caplog.set_level(logging.WARNING)
 
