@@ -2452,6 +2452,7 @@ button:active:not(:disabled):not(.latest-btn):not(.btn-send) {
 }
 
 .composer-shell {
+  position: relative; /* anchors the @ list */
   background: var(--color-elevated);
   border: 1px solid var(--color-border-strong);
   border-radius: var(--radius-lg);
@@ -2599,6 +2600,45 @@ button:active:not(:disabled):not(.latest-btn):not(.btn-send) {
 }
 
 
+
+/* The @ list: the project's files, above the message box (see .project-menu). */
+.mention-menu {
+  position: absolute;
+  left: var(--space-2);
+  right: var(--space-2);
+  bottom: calc(100% + 6px);
+  z-index: 6;
+  list-style: none;
+  margin: 0;
+  padding: 6px;
+  max-height: min(40vh, 18rem);
+  overflow-y: auto;
+  background: var(--color-elevated);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-md);
+}
+
+.mention-menu[hidden] {
+  display: none;
+}
+
+.mention-item {
+  padding: 0.45rem 0.5rem;
+  border-radius: var(--radius-sm);
+  color: var(--color-fg);
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.mention-item:hover,
+.mention-item[aria-selected="true"] {
+  background: var(--color-hover);
+}
 
 .composer-attachments {
   display: flex;

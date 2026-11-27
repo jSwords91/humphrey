@@ -173,7 +173,7 @@
     if (composerHint) {
       composerHint.innerHTML = running
         ? "<kbd>Enter</kbd> steer · <kbd>Alt</kbd>+<kbd>Enter</kbd> follow-up · <kbd>Esc</kbd> stop"
-        : "<kbd>Enter</kbd> send · <kbd>Shift</kbd>+<kbd>Enter</kbd> newline";
+        : "<kbd>Enter</kbd> send · <kbd>Shift</kbd>+<kbd>Enter</kbd> newline · <kbd>@</kbd> file";
     }
     syncSendEnabled();
     setStatus(running ? "working" : "ready");
@@ -1346,6 +1346,109 @@
 
   function projectQuery() {
     return currentProject ? `?project=${encodeURIComponent(currentProject)}` : "";
+  }
+
+  // ── @ mentions ───────────────────────────────────────────
+  // Typing @ lists the project's files; picking one inserts @path, and the
+  // server attaches each tagged file for the model (app/mentions.py).
+  const mentionMenu = document.getElementById("mention-menu");
+  const MAX_MENTION_OPTIONS = 8;
+  /** @type {{ start: number, items: string[], active: number } | null} */
+  let mention = null;
+  let mentionTicket = 0;
+
+  /** The @word the caret is in, if any: where it starts and what follows the @. */
+  function mentionAtCaret() {
+    const caret = question.selectionStart;
+    if (caret !== question.selectionEnd) return null;
+    const match = /(^|\s)@"?([^\s"]*)$/.exec(question.value.slice(0, caret));
+    return match ? { start: match.index + match[1].length, query: match[2] } : null;
+  }
+
+  async function updateMentions() {
+    const found = mentionAtCaret();
+    if (!found) {
+      closeMentions();
+      return;
+    }
+    const ticket = ++mentionTicket;
+    const params = new URLSearchParams({ q: found.query });
+    if (currentProject) params.set("project", currentProject);
+    let files = [];
+    try {
+      const res = await fetch(`/api/files?${params}`);
+      files = res.ok ? await res.json() : [];
+    } catch {
+      files = [];
+    }
+    if (ticket !== mentionTicket) return; // a later keystroke overtook this answer
+    const items = files.slice(0, MAX_MENTION_OPTIONS).map(shownPath);
+    if (items.length === 0) {
+      closeMentions();
+      return;
+    }
+    mention = { start: found.start, items, active: 0 };
+    renderMentions();
+  }
+
+  function renderMentions() {
+    if (!mentionMenu || !mention) return;
+    const { items, active } = mention;
+    mentionMenu.replaceChildren(
+      ...items.map((path, i) => {
+        const option = document.createElement("li");
+        option.id = `mention-option-${i}`;
+        option.className = "mention-item";
+        option.setAttribute("role", "option");
+        option.setAttribute("aria-selected", String(i === active));
+        option.textContent = path;
+        // mousedown, not click: the message box keeps focus (and its caret).
+        option.addEventListener("mousedown", (event) => {
+          event.preventDefault();
+          pickMention(i);
+        });
+        return option;
+      }),
+    );
+    mentionMenu.hidden = false;
+    question.setAttribute("aria-activedescendant", `mention-option-${active}`);
+    document.getElementById(`mention-option-${active}`)?.scrollIntoView({ block: "nearest" });
+  }
+
+  function closeMentions() {
+    mentionTicket++; // drop an answer still on its way
+    mention = null;
+    if (mentionMenu) mentionMenu.hidden = true;
+    question.removeAttribute("aria-activedescendant");
+  }
+
+  /** @param {number} index */
+  function pickMention(index) {
+    if (!mention) return;
+    const path = mention.items[index];
+    const tag = /\s/.test(path) ? `@"${path}" ` : `@${path} `;
+    question.setRangeText(tag, mention.start, question.selectionStart, "end");
+    closeMentions();
+    autoSize();
+  }
+
+  /** Arrow keys, Enter/Tab and Esc while the list is open. @param {KeyboardEvent} event */
+  function handleMentionKey(event) {
+    if (!mention) return false;
+    const count = mention.items.length;
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      mention.active = (mention.active + (event.key === "ArrowDown" ? 1 : count - 1)) % count;
+      renderMentions();
+    } else if (event.key === "Enter" || event.key === "Tab") {
+      pickMention(mention.active);
+    } else if (event.key === "Escape") {
+      closeMentions();
+      event.stopPropagation(); // Esc closes the list; it doesn't also stop the run
+    } else {
+      return false;
+    }
+    event.preventDefault();
+    return true;
   }
 
   /** The folder on disk of the project in view, once /api/projects has said. */
@@ -4600,7 +4703,10 @@
   });
 
   question.addEventListener("input", autoSize);
+  question.addEventListener("input", () => void updateMentions());
+  question.addEventListener("blur", closeMentions);
   question.addEventListener("keydown", (event) => {
+    if (handleMentionKey(event)) return;
     if (event.key === "Enter" && event.altKey && stage.dataset.running === "1") {
       event.preventDefault();
       if (sessionId) {
